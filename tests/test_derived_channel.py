@@ -3,7 +3,7 @@
 Channel definitions are taken directly from the battery0 getChannelsOfComponent
 response (tests/data/battery0.json), embedded here as a static Python literal so
 the test is self-contained and does not read any data files at runtime.
-The combined-sensor configuration comes from the real combined_sensors.json.
+The derived channel definitions mirror the ones of the Home Assistant integration.
 """
 
 import re
@@ -12,8 +12,12 @@ from unittest.mock import MagicMock
 import pytest
 from yarl import URL
 
-from openems_client.helpers_openems import expand_sensor_def
-from openems_client.openems import OpenEMSDerivedChannel, OpenEMSEdge
+from openems_client.helpers_openems import expand_derived_definition
+from openems_client.openems import (
+    DerivedChannelDefinition,
+    OpenEMSDerivedChannel,
+    OpenEMSEdge,
+)
 
 BATTERY0_CHANNELS = [
     # Needed for VoltageDifference derived sensor and integration test
@@ -56,7 +60,7 @@ BATTERY0_CHANNELS = [
         "category": "OPENEMS_TYPE",
     },
     # One representative cell from each of the other three modules so that
-    # expand_sensor_def produces a CellVoltageDifference sensor for every module.
+    # expand_derived_definition produces a CellVoltageDifference sensor for every module.
     {
         "id": "Tower0Module1Cell000Voltage",
         "accessMode": "RO",
@@ -127,13 +131,32 @@ def _make_component_with_edge(name: str = "battery0"):
     return comp
 
 
-def _voltage_difference_def() -> dict:
-    """Return the VoltageDifference combined-sensor definition."""
-    return {
-        "id": "VoltageDifference",
-        "template": "{{MaxCellVoltage}} - {{MinCellVoltage}}",
-        "unit_of_measurement": "mV",
-    }
+VOLTAGE_DIFFERENCE = DerivedChannelDefinition(
+    id="VoltageDifference",
+    sources={"max": "MaxCellVoltage", "min": "MinCellVoltage"},
+    value_fn=lambda v: v["max"] - v["min"],
+    unit="mV",
+)
+
+CELL_VOLTAGE_DIFFERENCE = DerivedChannelDefinition(
+    id="Tower{tId}Module{mId}CellVoltageDifference",
+    sources={"cells": "Tower{tId}Module{mId}Cell{cId}Voltage"},
+    value_fn=lambda v: max(v["cells"]) - min(v["cells"]),
+    unit="mV",
+)
+
+
+def _make_derived(
+    comp, definition: DerivedChannelDefinition, name: str | None = None
+) -> OpenEMSDerivedChannel:
+    """Expand the definition against BATTERY0_CHANNELS and create one derived channel."""
+    expanded = dict(
+        expand_derived_definition(definition, [c["id"] for c in BATTERY0_CHANNELS])
+    )
+    name = name or definition.id
+    return OpenEMSDerivedChannel(
+        comp, name, definition.unit, expanded[name], definition.value_fn
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +167,7 @@ def _voltage_difference_def() -> dict:
 def test_voltage_difference_native_value_none_before_any_update() -> None:
     """native_value is None until both reference channels carry a value."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     assert sensor.native_value is None
 
@@ -152,7 +175,7 @@ def test_voltage_difference_native_value_none_before_any_update() -> None:
 def test_voltage_difference_native_value_none_with_partial_update() -> None:
     """native_value remains None when only one of the two refs is set."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
 
@@ -162,7 +185,7 @@ def test_voltage_difference_native_value_none_with_partial_update() -> None:
 def test_voltage_difference_computes_correctly() -> None:
     """native_value equals MaxCellVoltage - MinCellVoltage once both are set."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
@@ -173,7 +196,7 @@ def test_voltage_difference_computes_correctly() -> None:
 def test_voltage_difference_updates_on_new_value() -> None:
     """native_value reflects the latest reference-channel values."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
@@ -185,7 +208,7 @@ def test_voltage_difference_updates_on_new_value() -> None:
 def test_voltage_difference_callback_called_on_value_change() -> None:
     """Registered callback is invoked whenever the computed value changes."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
     sensor.register_callback(lambda: calls.append(None))
@@ -199,7 +222,7 @@ def test_voltage_difference_callback_called_on_value_change() -> None:
 def test_voltage_difference_callback_not_called_when_value_unchanged() -> None:
     """Callback is NOT invoked when a data update produces the same derived value."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
     sensor.register_callback(lambda: calls.append(None))
@@ -215,7 +238,7 @@ def test_voltage_difference_callback_not_called_when_value_unchanged() -> None:
 def test_voltage_difference_ignores_non_reference_channel() -> None:
     """Updates for channels not in the sensor's reference set are ignored."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
     sensor.register_callback(lambda: calls.append(None))
@@ -229,7 +252,7 @@ def test_voltage_difference_ignores_non_reference_channel() -> None:
 def test_voltage_difference_becomes_none_on_null_reference() -> None:
     """When a reference channel receives None the derived value becomes None."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
     sensor.register_callback(lambda: calls.append(None))
@@ -251,7 +274,7 @@ def test_voltage_difference_becomes_none_on_null_reference() -> None:
 def test_voltage_difference_register_callback_adds_to_edge() -> None:
     """register_callback subscribes reference channels on the edge."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
     sensor.register_callback(lambda: None)
 
     registered = comp.edge.registered_channels
@@ -262,7 +285,7 @@ def test_voltage_difference_register_callback_adds_to_edge() -> None:
 def test_voltage_difference_unregister_callback_removes_handler() -> None:
     """unregister_callback removes the sensor from all edge subscriptions."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
     sensor.register_callback(lambda: None)
     sensor.unregister_callback()
 
@@ -274,7 +297,7 @@ def test_voltage_difference_unregister_callback_removes_handler() -> None:
 def test_voltage_difference_no_callback_after_unregister() -> None:
     """After unregistering, handle_data_update must not invoke the callback."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
     sensor.register_callback(lambda: calls.append(None))
@@ -291,27 +314,19 @@ def test_voltage_difference_no_callback_after_unregister() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _expand_tower_cell_voltage_diff() -> list[dict]:
+def _expand_tower_cell_voltage_diff() -> list[tuple[str, dict]]:
     """Expand Tower{tId}Module{mId}CellVoltageDifference against BATTERY0_CHANNELS.
 
-    Returns all expanded sensor definitions (one per tower/module combination).
+    Returns all expanded definitions (one per tower/module combination).
     """
-    sensor_def = {
-        "id": "Tower{tId}Module{mId}CellVoltageDifference",
-        "template": (
-            "[{{Tower{tId}Module{mId}Cell{cId}Voltage}}] | max"
-            " - [{{Tower{tId}Module{mId}Cell{cId}Voltage}}] | min"
-        ),
-        "unit_of_measurement": "mV",
-    }
     channel_ids = [c["id"] for c in BATTERY0_CHANNELS]
-    return expand_sensor_def(sensor_def, channel_ids)
+    return expand_derived_definition(CELL_VOLTAGE_DIFFERENCE, channel_ids)
 
 
 def test_tower_cell_voltage_difference_expansion_covers_all_modules() -> None:
-    """expand_sensor_def yields one definition per tower/module with cell-voltage channels."""
+    """expand_derived_definition yields one definition per tower/module with cell-voltage channels."""
     expanded = _expand_tower_cell_voltage_diff()
-    expanded_ids = {e["id"] for e in expanded}
+    expanded_ids = {name for name, _ in expanded}
 
     assert "Tower0Module0CellVoltageDifference" in expanded_ids
     assert "Tower0Module1CellVoltageDifference" in expanded_ids
@@ -323,8 +338,9 @@ def test_tower_cell_voltage_difference_computes_max_minus_min() -> None:
     """Derived sensor returns max(cell voltages) - min(cell voltages)."""
     comp = _make_component_with_edge()
     # Use Tower0Module0 (14 cells in the full dataset)
-    expanded = {e["id"]: e for e in _expand_tower_cell_voltage_diff()}
-    sensor = OpenEMSDerivedChannel(comp, expanded["Tower0Module0CellVoltageDifference"])
+    sensor = _make_derived(
+        comp, CELL_VOLTAGE_DIFFERENCE, "Tower0Module0CellVoltageDifference"
+    )
 
     # Set all cells to 3300 mV, then raise the last one to 3360 mV.
     # Expected spread: 3360 - 3300 = 60 mV.
@@ -343,8 +359,9 @@ def test_tower_cell_voltage_difference_computes_max_minus_min() -> None:
 def test_tower_cell_voltage_difference_partial_update_stays_none() -> None:
     """Result is None until all cell-voltage references are populated."""
     comp = _make_component_with_edge()
-    expanded = {e["id"]: e for e in _expand_tower_cell_voltage_diff()}
-    sensor = OpenEMSDerivedChannel(comp, expanded["Tower0Module0CellVoltageDifference"])
+    sensor = _make_derived(
+        comp, CELL_VOLTAGE_DIFFERENCE, "Tower0Module0CellVoltageDifference"
+    )
 
     # Send only the first cell; the others remain None
     cell_ids_m0 = sorted(
@@ -362,8 +379,8 @@ def test_tower_cell_voltage_difference_partial_update_stays_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_derived_sensors_created_via_init_channels() -> None:
-    """OpenEMSEdge.init_channels populates derived_sensors from combined_sensors.json."""
+async def test_create_derived_channels_from_component() -> None:
+    """create_derived_channels expands definitions against the component channels."""
     backend = _make_backend()
 
     battery0_conf = {
@@ -380,7 +397,10 @@ async def test_derived_sensors_created_via_init_channels() -> None:
     edge = OpenEMSEdge(backend, "edge0", component_config)
     try:
         battery0 = edge.components["battery0"]
-        derived_ids = {s.name for s in battery0.derived_sensors}
+        derived = battery0.create_derived_channels(
+            [VOLTAGE_DIFFERENCE, CELL_VOLTAGE_DIFFERENCE]
+        )
+        derived_ids = {s.name for s in derived}
 
         assert "VoltageDifference" in derived_ids
         # All four tower/module combinations must be present
@@ -388,6 +408,7 @@ async def test_derived_sensors_created_via_init_channels() -> None:
         assert "Tower0Module1CellVoltageDifference" in derived_ids
         assert "Tower0Module2CellVoltageDifference" in derived_ids
         assert "Tower0Module3CellVoltageDifference" in derived_ids
+        assert len(derived) == 5
     finally:
         edge.stop()
 
@@ -395,7 +416,7 @@ async def test_derived_sensors_created_via_init_channels() -> None:
 def test_derived_channel_unit_of_measurement() -> None:
     """Derived channel exposes the unit_of_measurement from the sensor definition."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     assert sensor.unit == "mV"
 
@@ -403,9 +424,55 @@ def test_derived_channel_unit_of_measurement() -> None:
 def test_derived_channel_unique_id_contains_component_and_channel() -> None:
     """unique_id encodes edge hostname, edge id, component name, and sensor id."""
     comp = _make_component_with_edge()
-    sensor = OpenEMSDerivedChannel(comp, _voltage_difference_def())
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     uid = sensor.unique_id()
     assert "testhost" in uid
     assert "battery0" in uid
     assert "VoltageDifference" in uid
+
+
+def test_expand_without_placeholders_keeps_definition() -> None:
+    """A definition without placeholders is created even if no channel matches."""
+    assert expand_derived_definition(VOLTAGE_DIFFERENCE, []) == [
+        ("VoltageDifference", {"max": "MaxCellVoltage", "min": "MinCellVoltage"})
+    ]
+
+
+def test_expand_skips_keys_with_missing_sources() -> None:
+    """A tower/module without all source channels gets no derived channel."""
+    definition = DerivedChannelDefinition(
+        id="Tower{tId}Module{mId}Spread",
+        sources={
+            "cells": "Tower{tId}Module{mId}Cell{cId}Voltage",
+            "temp": "Tower{tId}Module{mId}Temperature",
+        },
+        value_fn=lambda v: max(v["cells"]) - v["temp"],
+        unit="mV",
+    )
+    channel_ids = [
+        "Tower0Module0Cell000Voltage",
+        "Tower0Module0Temperature",
+        "Tower0Module1Cell000Voltage",
+    ]
+
+    assert expand_derived_definition(definition, channel_ids) == [
+        (
+            "Tower0Module0Spread",
+            {
+                "cells": ["Tower0Module0Cell000Voltage"],
+                "temp": "Tower0Module0Temperature",
+            },
+        )
+    ]
+
+
+def test_value_fn_error_results_in_none() -> None:
+    """Errors raised by value_fn for unexpected values result in None."""
+    comp = _make_component_with_edge()
+    sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
+
+    sensor.handle_data_update("battery0/MaxCellVoltage", "invalid")
+    sensor.handle_data_update("battery0/MinCellVoltage", 3300)
+
+    assert sensor.native_value is None

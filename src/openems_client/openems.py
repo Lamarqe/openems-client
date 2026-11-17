@@ -2,7 +2,8 @@
 
 from abc import abstractmethod
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import time
 import logging
 import math
@@ -30,7 +31,7 @@ from .helpers import connection_url, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
     access_mode,
-    expand_sensor_def,
+    expand_derived_definition,
     prepare_ref_value,
 )
 
@@ -239,26 +240,56 @@ class OpenEMSChannel(OpenEMSDataHandler):
         )
 
 
+type DerivedSourceValue = str | float | None
+type DerivedValueFn = Callable[
+    [Mapping[str, DerivedSourceValue | list[DerivedSourceValue]]], float | None
+]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DerivedChannelDefinition:
+    """Definition of a channel whose value is calculated from other channels.
+
+    `id` and the `sources` channel id patterns may contain {name} placeholders.
+    A placeholder in `id` creates one derived channel per matching value. A
+    placeholder that only occurs in a source turns it into a list of all
+    matching channels. `value_fn` receives the source values by source name
+    and is only called when all of them are known.
+    """
+
+    id: str
+    sources: Mapping[str, str]
+    value_fn: DerivedValueFn
+    unit: str
+
+
 class OpenEMSDerivedChannel(OpenEMSDataHandler):
     """Class representing a derived sensor of an OpenEMS component."""
 
     def __init__(
-        self, component: OpenEMSComponent, combined_sensor_def: dict[str, Any]
+        self,
+        component: OpenEMSComponent,
+        name: str,
+        unit: str,
+        sources: Mapping[str, str | list[str]],
+        value_fn: DerivedValueFn,
     ) -> None:
         """Initialize the derived channel."""
-        super().__init__(component, combined_sensor_def["id"])
-        self.sensor_template: Template
-        self.unit: str = combined_sensor_def["unit_of_measurement"]
-        self.reference_channels: dict[str, str | float | None] = {}
-        self.sensor_template, sensor_references = prepare_ref_value(
-            combined_sensor_def["template"], component
+        super().__init__(component, name)
+        self.unit: str = unit
+        self._sources = sources
+        self._value_fn = value_fn
+        channel_ids: list[str] = []
+        for source in sources.values():
+            channel_ids.extend(source if isinstance(source, list) else [source])
+        self.reference_channels: dict[str, DerivedSourceValue] = dict.fromkeys(
+            component.name + "/" + channel_id for channel_id in channel_ids
         )
-        self.reference_channels = dict.fromkeys(sensor_references)
 
     def register_callback(self, callback: Callable):
         """Register callback."""
         self.callback = callback
-        channel_names = {x.replace(SLASH_ESC, "/") for x in self.reference_channels} | {
+        channel_names = set(self.reference_channels) | {
             self.component.name + "/" + self.name,
         }
         self.component.edge.register_channel(channel_names, self)
@@ -268,19 +299,31 @@ class OpenEMSDerivedChannel(OpenEMSDataHandler):
         self.callback = None
         self.component.edge.unregister_channel(self)
 
+    def _source_value(
+        self, source: str | list[str]
+    ) -> DerivedSourceValue | list[DerivedSourceValue]:
+        if isinstance(source, list):
+            return [self._source_value(channel_id) for channel_id in source]
+        return self.reference_channels[self.component.name + "/" + source]
+
+    def _calculate(self) -> float | None:
+        values = {name: self._source_value(src) for name, src in self._sources.items()}
+        for value in values.values():
+            if value is None or (isinstance(value, list) and None in value):
+                return None
+        try:
+            result = self._value_fn(values)
+            return None if result is None else float(result)
+        except ValueError, TypeError:
+            return None
+
     def handle_data_update(self, channel_name, value: str | float | None) -> None:
         """Handle a data update from the backend."""
-        channel_reference = channel_name.replace("/", SLASH_ESC)
-        if channel_reference in self.reference_channels:
-            if self.reference_channels[channel_reference] != value:
-                self.reference_channels[channel_reference] = value
+        if channel_name in self.reference_channels:
+            if self.reference_channels[channel_name] != value:
+                self.reference_channels[channel_name] = value
 
-                try:
-                    render_result = self.sensor_template.render(self.reference_channels)
-                    channel_value = float(render_result)
-                except ValueError, TypeError:
-                    channel_value = None
-
+                channel_value = self._calculate()
                 if channel_value != self._current_value:
                     self._current_value = channel_value
                     self.notify_ha()
@@ -638,11 +681,12 @@ class OpenEMSComponent:
         self.number_properties: list[OpenEMSNumberProperty] = []
         self.boolean_properties: list[OpenEMSBooleanProperty] = []
         self.time_properties: list[OpenEMSTimeProperty] = []
-        self.derived_sensors: list[OpenEMSDerivedChannel] = []
+        self.channel_ids: list[str] = []
         self.create_entities: bool = False
 
     def init_channels(self, channels: list[dict[str, Any]]):
         """Parse and initialize the components channels."""
+        self.channel_ids = [c["id"] for c in channels]
         for channel_json in channels:
             options_backend: dict[str, int] | list[str] | None = channel_json.pop(
                 "options", None
@@ -718,17 +762,18 @@ class OpenEMSComponent:
                         self.boolean_sensors.append(channel)
                     case _:
                         self.sensors.append(channel)
-        # prepare derived sensors.
-        for sensor_def in CONFIG.get_combined_sensors(self.name):
-            # 1st step: map variables in config ids to concrete names
-            expanded_sensor_defs = expand_sensor_def(
-                sensor_def, [c["id"] for c in channels]
+
+    def create_derived_channels(
+        self, definitions: Iterable[DerivedChannelDefinition]
+    ) -> list[OpenEMSDerivedChannel]:
+        """Create the derived channels for the given definitions."""
+        return [
+            OpenEMSDerivedChannel(
+                self, name, definition.unit, sources, definition.value_fn
             )
-            # 2nd step: create all channels
-            for expanded_sensor_def in expanded_sensor_defs:
-                self.derived_sensors.append(
-                    OpenEMSDerivedChannel(self, expanded_sensor_def)
-                )
+            for definition in definitions
+            for name, sources in expand_derived_definition(definition, self.channel_ids)
+        ]
 
     def get_property(self, name: str) -> OpenEMSProperty | None:
         """Return the property with the given channel name or config name."""

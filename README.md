@@ -57,6 +57,27 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Derived channels
+
+Values that OpenEMS does not provide directly can be calculated from other
+channels of a component. Placeholders in `id` create one channel per match;
+placeholders that only occur in a source turn it into a list of values.
+
+```python
+from openems_client.openems import DerivedChannelDefinition
+
+CELL_VOLTAGE_DIFFERENCE = DerivedChannelDefinition(
+    id="Tower{tId}Module{mId}CellVoltageDifference",
+    sources={"cells": "Tower{tId}Module{mId}Cell{cId}Voltage"},
+    value_fn=lambda v: max(v["cells"]) - min(v["cells"]),
+    unit="mV",
+)
+
+component = backend.the_edge.components["battery0"]
+for channel in component.create_derived_channels([CELL_VOLTAGE_DIFFERENCE]):
+    channel.register_callback(lambda: print(channel.name, channel.native_value))
+```
+
 ### Connection types
 
 | Constant | Target | Default URL |

@@ -483,10 +483,6 @@ async def test_heat_pump_sg_ready_properties() -> None:
         for name, limits in threshold_limits.items():
             assert (numbers[name].lower_limit, numbers[name].upper_limit) == limits
             assert numbers[name].step == 1
-            assert openems.CONFIG.get_number_mode("ctrlIoHeatPump0", name) == "box"
-
-        for name in (*selects, *numbers, "_PropertyAutomaticLockCtrlEnabled", "Status"):
-            assert openems.CONFIG.is_channel_enabled("ctrlIoHeatPump0", name), name
 
         # no update group: each property is sent individually
         await selects["_PropertyManualState"].update_value("RECOMMENDATION")

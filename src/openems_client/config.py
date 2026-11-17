@@ -14,8 +14,6 @@ class OpenEMSConfig:
     def __init__(self) -> None:
         """Initialize and read json files."""
         path = Path(__file__).parent / "config"
-        with (path / "default_channels.json").open(encoding=ENCODING) as channel_file:
-            self.default_channels = json.load(channel_file)
         with (path / "enum_options.json").open(encoding=ENCODING) as enum_file:
             self.enum_options = json.load(enum_file)
         with (path / "time_options.json").open(encoding=ENCODING) as time_file:
@@ -26,8 +24,6 @@ class OpenEMSConfig:
             encoding=ENCODING
         ) as groups_file:
             self.update_groups = json.load(groups_file)
-        with (path / "combined_sensors.json").open(encoding=ENCODING) as combined_file:
-            self.combined_sensors = json.load(combined_file)
 
     def _get_config_property(self, dict, property, component_name, channel_name):
         """Return dict property for a given component/channel."""
@@ -69,29 +65,6 @@ class OpenEMSConfig:
             self.number_properties, "step", component_name, channel_name
         )
 
-    def get_number_mode(self, component_name, channel_name) -> str | None:
-        """Return the display mode ("box" or "slider") for a given component/channel."""
-        return self._get_config_property(
-            self.number_properties, "mode", component_name, channel_name
-        )
-
-    def is_component_enabled(self, comp_name: str) -> bool:
-        """Return if there is at least one channel enabled by default."""
-        for entry in self.default_channels:
-            if re.fullmatch(entry["component_regexp"], comp_name):
-                return True
-
-        return False
-
-    def is_channel_enabled(self, comp_name, chan_name) -> bool:
-        """Return True if the channel is enabled by default."""
-        for entry in self.default_channels:
-            if re.fullmatch(entry["component_regexp"], comp_name):
-                if chan_name in entry["channels"]:
-                    return True
-
-        return False
-
     def update_group_members(self, comp_name, chan_name) -> tuple[list[str], Any]:
         """Return list of all update group members and the condition value."""
         for entry in self.update_groups:
@@ -101,11 +74,3 @@ class OpenEMSConfig:
                         return rule["requires"], rule.get("when")
 
         return [], None
-
-    def get_combined_sensors(self, comp_name) -> list[dict]:
-        """Return list of combined sensors for given component."""
-        for entry in self.combined_sensors:
-            if re.fullmatch(entry["component_regexp"], comp_name):
-                return entry["combined_sensors"]
-
-        return []

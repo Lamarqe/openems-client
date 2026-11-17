@@ -7,7 +7,6 @@
           "lower": "0-{{$ess.id/MaxApparentPower}}",
           "upper": "{{$ess.id/MaxApparentPower}}"
         },
-        "mode": "box",
         "step": 100
       }
     ],
@@ -98,7 +97,6 @@
           "lower": "0",
           "upper": "100000"
         },
-        "mode": "box",
         "step": 1
       },
       {
@@ -107,7 +105,6 @@
           "lower": "0",
           "upper": "100000"
         },
-        "mode": "box",
         "step": 1
       },
       {
@@ -116,7 +113,6 @@
           "lower": "0",
           "upper": "100000"
         },
-        "mode": "box",
         "step": 1
       },
       {
@@ -125,7 +121,6 @@
           "lower": "0",
           "upper": "3600"
         },
-        "mode": "box",
         "step": 1
       }
     ],

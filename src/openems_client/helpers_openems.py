@@ -2,14 +2,14 @@
 
 from enum import IntFlag
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from jinja2 import Template
 
 from .const import SLASH_ESC
 
 if TYPE_CHECKING:
-    from .openems import OpenEMSChannel, OpenEMSComponent
+    from .openems import DerivedChannelDefinition, OpenEMSChannel, OpenEMSComponent
 
 
 class OpenEMSAccessMode(IntFlag):
@@ -49,80 +49,56 @@ def prepare_ref_value(
     return Template(value_expr), linked_channels
 
 
-def expand_sensor_def(
-    sensor_def: dict[str, str], channel_ids: list[str]
-) -> list[dict[str, str]]:
-    """Expand a sensor definition with variables in the id and template."""
-    # find all variables in the sensor template
-    var_pattern = re.compile(r"{{(.*?)}}")
-    refs = var_pattern.findall(sensor_def["template"])
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
-    # create corresponding regexps to apply group matches against it afterwards
-    template_variables: list[tuple[str, str]] = []
-    pattern_matched = False
-    for ref in refs:
-        ref_pattern, num_subs = re.subn(r"\{(\w+)\}", r"(?P<\1>[^{}]+)", ref)
-        pattern_matched |= num_subs > 0
-        template_variables.append((ref, ref_pattern))
-    # if no variables need to be expanded, return the original sensor definition as a single item list
-    if not pattern_matched:
-        return [sensor_def]
 
-    key_groups: list[str] = re.findall(r"\{(\w+)\}", sensor_def["id"])
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    """Convert a channel id pattern with {name} placeholders into a regex."""
+    parts = _PLACEHOLDER.split(pattern)
+    # split() alternates literal text and placeholder names
+    regex = "".join(
+        re.escape(part) if i % 2 == 0 else f"(?P<{part}>[^{{}}]+)"
+        for i, part in enumerate(parts)
+    )
+    return re.compile(regex)
 
-    # try to match all channel ids to the variables, and find all channels that match the variable pattern
-    target_defs: dict[tuple, list[dict[str, str]]] = {}
-    for t in template_variables:
+
+def expand_derived_definition(
+    definition: DerivedChannelDefinition, channel_ids: list[str]
+) -> list[tuple[str, dict[str, str | list[str]]]]:
+    """Expand a derived channel definition against the channel ids of a component.
+
+    Placeholders in the definition id select one derived channel per value
+    combination. Placeholders that only occur in a source pattern turn that
+    source into a list of all matching channel ids.
+    Returns (derived channel id, {source name: channel id(s)}) tuples.
+    """
+    key_names = _PLACEHOLDER.findall(definition.id)
+    if not key_names and not any(
+        _PLACEHOLDER.search(pattern) for pattern in definition.sources.values()
+    ):
+        return [(definition.id, dict(definition.sources))]
+
+    expanded: dict[tuple[str, ...], dict[str, str | list[str]]] = {}
+    for source_name, pattern in definition.sources.items():
+        regex = _pattern_regex(pattern)
+        is_list = any(name not in key_names for name in _PLACEHOLDER.findall(pattern))
         for channel_id in channel_ids:
-            if match := re.fullmatch(t[1], channel_id):
-                keys = [v for k, v in match.groupdict().items() if k in key_groups]
-                key_tuple = tuple(keys)
-                values = {
-                    k: v for k, v in match.groupdict().items() if k not in key_groups
-                }
-                if key_tuple not in target_defs:
-                    target_defs[key_tuple] = []
-                if values not in target_defs[key_tuple]:
-                    target_defs[key_tuple].append(values)
+            if not (match := regex.fullmatch(channel_id)):
+                continue
+            key = tuple(match.group(name) for name in key_names)
+            sources = expanded.setdefault(key, {})
+            if is_list:
+                cast(list[str], sources.setdefault(source_name, [])).append(channel_id)
+            else:
+                sources[source_name] = channel_id
 
-    # create new sensor defs for all found variable matches
-    expanded_defs = []
-    for key_tuple, values_list in target_defs.items():
-        # as the tuple cannot be used directly for string formatting,
-        # create a mapping of the variable names to the values
-        # initially populate the mapping with the key groups
-        key_map = {}
-        for i, key in enumerate(key_tuple):
-            key_map[key_groups[i]] = key
-        expanded_id = sensor_def["id"].format(**key_map)
-        expanded_template_vars = {}
-        # now merge the key map with the template groups and process the template with the combined map
-        for template_var, _ in template_variables:
-            expanded_template_vars[template_var] = []
-            for values in values_list:
-                all_values = {**key_map, **values}
-
-                expanded_template_vars[template_var].append(
-                    template_var.format(**all_values)
-                )
-            # replace the resulting list with a string representation of the content, to be used in the template
-            expanded_template_vars[template_var] = (
-                "{{" + "}}, {{".join(expanded_template_vars[template_var]) + "}}"
-            )
-            expanded_def = re.sub(
-                var_pattern,
-                lambda m, expanded_template_vars=expanded_template_vars: (
-                    expanded_template_vars.get(m.group(1), m.group(0))
-                ),
-                sensor_def["template"],
-            )
-        # copy original attributes, only replace the template and id with the expanded ones
-        added_def = sensor_def.copy()
-        added_def["template"] = expanded_def
-        added_def["id"] = expanded_id
-        expanded_defs.append(added_def)
-
-    return expanded_defs
+    return [
+        (definition.id.format(**dict(zip(key_names, key, strict=True))), sources)
+        for key, sources in expanded.items()
+        # all sources must exist, otherwise the value can never be calculated
+        if sources.keys() == definition.sources.keys()
+    ]
 
 
 def access_mode(channel: OpenEMSChannel) -> OpenEMSAccessMode:
