@@ -546,6 +546,26 @@ async def test_read_edges_edge_fields_match_traffic() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_read_edge_config_raises_without_edge_id() -> None:
+    """read_edge_config raises EdgeNotDefinedError when no edge_id is set."""
+    conn, _ = _make_conn()
+    reader = OpenEMSConfigReader(conn)
+    with pytest.raises(EdgeNotDefinedError):
+        await reader.read_edge_config()
+
+
+async def test_read_edge_config_returns_components_without_channels() -> None:
+    """read_edge_config only sends getEdgeConfig and returns its components."""
+    conn, mock_server = _make_conn()
+    mock_server.edgeRpc = AsyncMock(return_value=_GET_EDGE_CONFIG_RESPONSE)
+
+    reader = OpenEMSConfigReader(conn, edge_id="0")
+    result = await reader.read_edge_config()
+
+    assert result == _GET_EDGE_CONFIG_RESPONSE["payload"]["result"]["components"]
+    mock_server.edgeRpc.assert_awaited_once()
+
+
 async def test_read_edge_components_raises_without_edge_id() -> None:
     """read_edge_components raises EdgeNotDefinedError when no edge_id is set."""
     conn, _ = _make_conn()

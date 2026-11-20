@@ -164,17 +164,20 @@ class OpenEMSConfigReader:
         """Set the edge ID to be used for further data requests."""
         self.edge_id = edge_id
 
-    async def read_edge_components(self) -> dict:
-        """Read components of the edge."""
+    async def read_edge_config(self) -> dict:
+        """Read the component list of the edge, without channels."""
         if not self.edge_id:
             raise EdgeNotDefinedError("No edge ID defined for reading components.")
 
-        # read component list
         edge_call = wrap_jsonrpc("getEdgeConfig")
         r = await self.connection.rpc_server.edgeRpc(
             edgeId=self.edge_id, payload=edge_call
         )
-        components = r["payload"]["result"]["components"]
+        return r["payload"]["result"]["components"]
+
+    async def read_edge_components(self) -> dict:
+        """Read components of the edge."""
+        components = await self.read_edge_config()
 
         # read properties of all channels of each component
         await self.read_edge_channels(components)
