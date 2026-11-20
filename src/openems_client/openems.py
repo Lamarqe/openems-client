@@ -26,7 +26,8 @@ from .const import (
     AdvancedOptions,
     ConfigOptions,
 )
-from .entry_data import OpenEMSWebSocketConnection
+from .entry_data import OpenEMSWebSocketConnection, backend_call
+from .exceptions import OpenEMSConnectionError
 from .helpers import connection_url, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
@@ -806,12 +807,9 @@ class OpenEMSComponent:
         """Send updateComponentConfig request to backend."""
         properties = [{"name": chan[0], "value": chan[1]} for chan in channels]
         if not self.edge.backend.connection.rpc_server.connected:
-            _LOGGER.error(
-                'No connection to backend. Cannot send "updateComponentConfig" message for component %s with properties: %s',
-                self.name,
-                str(properties),
+            raise OpenEMSConnectionError(
+                f"Not connected to the backend, cannot update component {self.name}"
             )
-            return
 
         envelope = wrap_jsonrpc(
             "updateComponentConfig", componentId=self.name, properties=properties
@@ -821,8 +819,10 @@ class OpenEMSComponent:
             self.name,
             str(properties),
         )
-        await self.edge.backend.connection.rpc_server.edgeRpc(
-            edgeId=self.edge.id, payload=envelope
+        await backend_call(
+            self.edge.backend.connection.rpc_server.edgeRpc(
+                edgeId=self.edge.id, payload=envelope
+            )
         )
 
     @property
@@ -1059,8 +1059,10 @@ class OpenEMSEdge:
         edge_call = wrap_jsonrpc(
             "componentJsonApi", componentId="_host", payload=system_update_state_call
         )
-        result = await self.backend.connection.rpc_server.edgeRpc(
-            edgeId=self._id, payload=edge_call
+        result = await backend_call(
+            self.backend.connection.rpc_server.edgeRpc(
+                edgeId=self._id, payload=edge_call
+            )
         )
         return result["payload"]["result"]
 
@@ -1070,8 +1072,12 @@ class OpenEMSEdge:
         edge_call = wrap_jsonrpc(
             "componentJsonApi", componentId="_host", payload=system_update_state_call
         )
-        await self.backend.connection.rpc_server.edgeRpc(
-            edgeId=self._id, payload=edge_call
+        # the update runs for minutes, the caller tracks it via get_system_update_state
+        await backend_call(
+            self.backend.connection.rpc_server.edgeRpc(
+                edgeId=self._id, payload=edge_call
+            ),
+            timeout=None,
         )
 
     async def execute_system_restart(self) -> None:
@@ -1080,8 +1086,10 @@ class OpenEMSEdge:
         edge_call = wrap_jsonrpc(
             "componentJsonApi", componentId="_host", payload=system_restart_call
         )
-        await self.backend.connection.rpc_server.edgeRpc(
-            edgeId=self._id, payload=edge_call
+        await backend_call(
+            self.backend.connection.rpc_server.edgeRpc(
+                edgeId=self._id, payload=edge_call
+            )
         )
 
     def set_config_options(self, options: ConfigOptions):

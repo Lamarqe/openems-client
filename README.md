@@ -57,6 +57,14 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Errors
+
+Requests to the backend raise the exceptions of `openems_client.exceptions`:
+
+- `OpenEMSConnectionError`: the backend cannot be reached or does not respond in time.
+- `OpenEMSAuthError`: the backend rejects the login.
+- `OpenEMSError`: the base class of both, also raised when the backend rejects a request.
+
 ### Derived channels
 
 Values that OpenEMS does not provide directly can be calculated from other

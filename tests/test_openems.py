@@ -7,11 +7,13 @@ network calls by using small dummy objects.
 from datetime import time
 from unittest.mock import AsyncMock, MagicMock
 
+import jsonrpc_base.jsonrpc
 import pytest
 from yarl import URL
 
 from openems_client import openems
 from openems_client.const import SLASH_ESC
+from openems_client.exceptions import OpenEMSConnectionError, OpenEMSError
 from openems_client.helpers import wrap_jsonrpc
 from openems_client.helpers_openems import prepare_ref_value
 
@@ -488,5 +490,43 @@ async def test_heat_pump_sg_ready_properties() -> None:
         await selects["_PropertyManualState"].update_value("RECOMMENDATION")
         comp.update_config.assert_awaited_once_with([("manualState", "RECOMMENDATION")])
 
+    finally:
+        edge.stop()
+
+
+async def test_edge_request_errors_are_converted() -> None:
+    """Errors of edge requests are raised as OpenEMS client errors."""
+    backend = _make_backend()
+    backend.connection.rpc_server.edgeRpc = AsyncMock(
+        side_effect=jsonrpc_base.jsonrpc.ProtocolError(500, "Internal error")
+    )
+    edge = openems.OpenEMSEdge(backend, "edge-1", {"_host": {"Hostname": "h1"}})
+    try:
+        with pytest.raises(OpenEMSError):
+            await edge.get_system_update_state()
+        with pytest.raises(OpenEMSError):
+            await edge.execute_system_restart()
+    finally:
+        edge.stop()
+
+
+async def test_update_config_raises_when_not_connected() -> None:
+    """Writing component properties without a connection raises OpenEMSConnectionError."""
+    backend = _make_backend()
+    backend.connection.rpc_server.connected = False
+    component_config = {
+        "_host": {"Hostname": "h1"},
+        "ctrlEvcs0": {
+            "_PropertyAlias": "EVCS",
+            "properties": {},
+            "channels": [make_channel_json("_PropertyEnabledCharging", "BOOLEAN")],
+        },
+    }
+    edge = openems.OpenEMSEdge(backend, "edge-1", component_config)
+    try:
+        with pytest.raises(OpenEMSConnectionError):
+            await edge.components["ctrlEvcs0"].update_config(
+                [("enabledCharging", True)]
+            )
     finally:
         edge.stop()

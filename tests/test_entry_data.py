@@ -14,6 +14,12 @@ from openems_client.entry_data import (
     EdgeNotDefinedError,
     OpenEMSConfigReader,
     OpenEMSWebSocketConnection,
+    backend_call,
+)
+from openems_client.exceptions import (
+    OpenEMSAuthError,
+    OpenEMSConnectionError,
+    OpenEMSError,
 )
 
 _CONN_PROPS = {
@@ -57,11 +63,61 @@ def _pending_task_mock() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
+async def _raise(error: Exception) -> None:
+    raise error
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(
+            jsonrpc_base.jsonrpc.TransportError("lost"),
+            OpenEMSConnectionError,
+            id="transport_error",
+        ),
+        pytest.param(TimeoutError(), OpenEMSConnectionError, id="timeout"),
+        pytest.param(
+            jsonrpc_base.jsonrpc.ProtocolError(1003, "Authentication failed"),
+            OpenEMSAuthError,
+            id="authentication_failed",
+        ),
+        pytest.param(
+            jsonrpc_base.jsonrpc.ProtocolError(500, "Internal error"),
+            OpenEMSError,
+            id="rejected_request",
+        ),
+    ],
+)
+async def test_backend_call_converts_errors(
+    error: Exception, expected: type[OpenEMSError]
+) -> None:
+    """backend_call converts transport, timeout and protocol errors into client errors."""
+    with pytest.raises(expected) as exc_info:
+        await backend_call(_raise(error))
+    assert type(exc_info.value) is expected
+
+
+async def test_backend_call_timeout() -> None:
+    """backend_call raises OpenEMSConnectionError when the timeout expires."""
+    with pytest.raises(OpenEMSConnectionError):
+        await backend_call(asyncio.sleep(1), timeout=0.01)
+
+
+async def test_login_raises_auth_error_on_rejected_login() -> None:
+    """A login rejected with the authentication error code raises OpenEMSAuthError."""
+    conn, mock_server = _make_conn()
+    mock_server.authenticateWithPassword = AsyncMock(
+        side_effect=jsonrpc_base.jsonrpc.ProtocolError(1003, "Authentication failed")
+    )
+    with pytest.raises(OpenEMSAuthError):
+        await conn.login_to_server()
+
+
 async def test_login_raises_on_not_connected() -> None:
-    """login_to_server raises ConnectionError when the server is not connected."""
+    """login_to_server raises OpenEMSConnectionError when the server is not connected."""
     conn, mock_server = _make_conn()
     mock_server.connected = False
-    with pytest.raises(ConnectionError):
+    with pytest.raises(OpenEMSConnectionError):
         await conn.login_to_server()
 
 
@@ -240,16 +296,14 @@ async def test_reconnect_forever_calls_connect_and_login_after_loss() -> None:
     login_mock.assert_called_once()
 
 
-async def test_reconnect_forever_extra_sleep_on_transport_error() -> None:
-    """A TransportError during reconnect triggers an extra 10-second sleep."""
+async def test_reconnect_forever_extra_sleep_on_connection_error() -> None:
+    """A connection error during reconnect triggers an extra 10-second sleep."""
     conn, _ = _make_conn()
     callback = MagicMock()
     conn.rpc_server_task = _done_task_mock()
     conn.notify_data_received()
 
-    connect_mock = AsyncMock(
-        side_effect=jsonrpc_base.jsonrpc.TransportError("connection refused")
-    )
+    connect_mock = AsyncMock(side_effect=OpenEMSConnectionError("connection refused"))
 
     sleep_calls: list[float] = []
 
@@ -276,16 +330,14 @@ async def test_reconnect_forever_extra_sleep_on_transport_error() -> None:
     connect_mock.assert_called_once()
 
 
-async def test_reconnect_forever_extra_sleep_on_protocol_error() -> None:
-    """A ProtocolError during reconnect triggers an extra 10-second sleep."""
+async def test_reconnect_forever_extra_sleep_on_rejected_request() -> None:
+    """A request rejected by the backend during reconnect triggers an extra 10-second sleep."""
     conn, _ = _make_conn()
     callback = MagicMock()
     conn.rpc_server_task = _done_task_mock()
     conn.notify_data_received()
 
-    connect_mock = AsyncMock(
-        side_effect=jsonrpc_base.jsonrpc.ProtocolError(500, "Internal error", [])
-    )
+    connect_mock = AsyncMock(side_effect=OpenEMSError("Internal error"))
 
     sleep_calls: list[float] = []
 
@@ -920,12 +972,15 @@ async def test_get_channel_values_ignores_non_current_data_push() -> None:
 
 
 async def test_get_channel_values_timeout_raises() -> None:
-    """get_channel_values_via_websocket raises TimeoutError when no data arrives."""
+    """get_channel_values_via_websocket raises OpenEMSConnectionError when no data arrives."""
     conn, _ = _make_conn()
     mock_server = _MockJsonrpcServer()
     # subscribeEdges does nothing → currentData is never pushed → wait_for times out
+    original_wait_for = asyncio.wait_for
 
-    async def _fake_wait_for(coro: object, *, timeout: float) -> None:
+    async def _fake_wait_for(coro, timeout=None):
+        if timeout != 5:
+            return await original_wait_for(coro, timeout)
         # Close the coroutine to avoid 'coroutine never awaited' warnings.
         if hasattr(coro, "close"):
             coro.close()
@@ -939,5 +994,5 @@ async def test_get_channel_values_timeout_raises() -> None:
         patch("asyncio.wait_for", new=_fake_wait_for),
     ):
         reader = OpenEMSConfigReader(conn, edge_id="0")
-        with pytest.raises(TimeoutError):
+        with pytest.raises(OpenEMSConnectionError):
             await reader.get_channel_values_via_websocket(["_host/Hostname"])

@@ -1,7 +1,7 @@
 """OpenEMS config entry data access and preparation."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import contextlib
 import functools
 import logging
@@ -13,13 +13,34 @@ import jsonrpc_websocket
 from yarl import URL
 
 from .const import (
+    AUTHENTICATION_FAILED_ERROR_CODE,
     CONN_TYPE_CUSTOM_URL,
+    CONNECT_TIMEOUT_SECONDS,
     CURRENT_DATA_TIMEOUT_SECONDS,
+    EDGE_CONFIG_TIMEOUT_SECONDS,
+    REQUEST_TIMEOUT_SECONDS,
     WEBSOCKET_HEARTBEAT_SECONDS,
 )
+from .exceptions import OpenEMSAuthError, OpenEMSConnectionError, OpenEMSError
 from .helpers import connection_url, wrap_jsonrpc
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def backend_call[T](
+    awaitable: Awaitable[T], timeout: float | None = REQUEST_TIMEOUT_SECONDS
+) -> T:
+    """Await a backend call and convert its errors into OpenEMS client errors."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout)
+    except TimeoutError as err:
+        raise OpenEMSConnectionError("Timeout waiting for the backend") from err
+    except jsonrpc_base.jsonrpc.TransportError as err:
+        raise OpenEMSConnectionError(str(err)) from err
+    except jsonrpc_base.jsonrpc.ProtocolError as err:
+        if err.args and err.args[0] == AUTHENTICATION_FAILED_ERROR_CODE:
+            raise OpenEMSAuthError(str(err)) from err
+        raise OpenEMSError(str(err)) from err
 
 
 def _ws_loop_ended(host: str | None, task: asyncio.Task) -> None:
@@ -63,17 +84,22 @@ class OpenEMSWebSocketConnection:
 
     async def connect_to_server(self):
         "Establish websocket connection."
-        self.rpc_server_task = await self.rpc_server.ws_connect()
-        self.rpc_server_task.add_done_callback(
+        rpc_server_task: asyncio.Task = await backend_call(
+            self.rpc_server.ws_connect(), CONNECT_TIMEOUT_SECONDS
+        )
+        rpc_server_task.add_done_callback(
             functools.partial(_ws_loop_ended, self.conn_url.host)
         )
+        self.rpc_server_task = rpc_server_task
 
     async def login_to_server(self) -> dict:
         "Authenticate with username and password."
         if not self.rpc_server.connected:
-            raise ConnectionError
-        return await self.rpc_server.authenticateWithPassword(
-            username=self.username, password=self.password
+            raise OpenEMSConnectionError("Not connected to the backend")
+        return await backend_call(
+            self.rpc_server.authenticateWithPassword(
+                username=self.username, password=self.password
+            )
         )
 
     def enable_reconnect(self, connection_lost_callback: Callable):
@@ -131,10 +157,7 @@ class OpenEMSWebSocketConnection:
                 # connected. Lets login
                 await self.login_to_server()
                 _LOGGER.info("Connection to host %s reestablished", self.conn_url.host)
-            except (
-                jsonrpc_base.jsonrpc.TransportError,
-                jsonrpc_base.jsonrpc.ProtocolError,
-            ):
+            except OpenEMSError:
                 await asyncio.sleep(10)
             self._last_data_received = time.time()
 
@@ -170,8 +193,9 @@ class OpenEMSConfigReader:
             raise EdgeNotDefinedError("No edge ID defined for reading components.")
 
         edge_call = wrap_jsonrpc("getEdgeConfig")
-        r = await self.connection.rpc_server.edgeRpc(
-            edgeId=self.edge_id, payload=edge_call
+        r = await backend_call(
+            self.connection.rpc_server.edgeRpc(edgeId=self.edge_id, payload=edge_call),
+            EDGE_CONFIG_TIMEOUT_SECONDS,
         )
         return r["payload"]["result"]["components"]
 
@@ -200,17 +224,16 @@ class OpenEMSConfigReader:
                     componentId="_componentManager",
                     payload=edge_component_call,
                 )
-                r = await self.connection.rpc_server.edgeRpc(
-                    edgeId=self.edge_id,
-                    payload=edge_call,
+                r = await backend_call(
+                    self.connection.rpc_server.edgeRpc(
+                        edgeId=self.edge_id,
+                        payload=edge_call,
+                    )
                 )
                 components[component_id]["channels"] = r["payload"]["result"][
                     "channels"
                 ]
-            except (
-                jsonrpc_base.jsonrpc.TransportError,
-                jsonrpc_base.jsonrpc.ProtocolError,
-            ):
+            except OpenEMSError:
                 _LOGGER.warning(
                     "_read_edge_channels: could not read channels of component %s, skipping",
                     component_id,
@@ -250,13 +273,17 @@ class OpenEMSConfigReader:
             heartbeat=WEBSOCKET_HEARTBEAT_SECONDS,
         )
 
-        ws_loop_task = await rpc_server.ws_connect()
+        ws_loop_task = await backend_call(
+            rpc_server.ws_connect(), CONNECT_TIMEOUT_SECONDS
+        )
         ws_loop_task.add_done_callback(
             functools.partial(_ws_loop_ended, self.connection.conn_url.host)
         )
         _LOGGER.debug("wsocket component info request: login")
-        await rpc_server.authenticateWithPassword(
-            username=self.connection.username, password=self.connection.password
+        await backend_call(
+            rpc_server.authenticateWithPassword(
+                username=self.connection.username, password=self.connection.password
+            )
         )
 
         # prepare callback event and subscribe for the required data
@@ -273,22 +300,24 @@ class OpenEMSConfigReader:
             data_received.set()
 
         rpc_server.edgeRpc = _handle_callback
-        await rpc_server.subscribeEdges(edges=[self.edge_id])
+        await backend_call(rpc_server.subscribeEdges(edges=[self.edge_id]))
 
         subscribe_call = wrap_jsonrpc("subscribeChannels", count=0, channels=channels)
         # pyright: ignore[reportGeneralTypeIssues]
-        await rpc_server.edgeRpc(edgeId=self.edge_id, payload=subscribe_call)
+        await backend_call(
+            rpc_server.edgeRpc(edgeId=self.edge_id, payload=subscribe_call)
+        )
 
         # wait for the data. When received, close connection and return data
-        await asyncio.wait_for(data_received.wait(), timeout=5)
+        await backend_call(data_received.wait(), timeout=5)
         await rpc_server.close()
 
         return data
 
     async def read_edges(self) -> dict:
         """Request list of all edges."""
-        return await self.connection.rpc_server.getEdges(
-            page=0, limit=20, searchParams={}
+        return await backend_call(
+            self.connection.rpc_server.getEdges(page=0, limit=20, searchParams={})
         )
 
     @staticmethod
