@@ -1,5 +1,7 @@
 """Helper methods which are independent of openems and HA classes."""
 
+import asyncio
+import contextlib
 import re
 import uuid
 
@@ -21,6 +23,15 @@ def connection_url(type: str, host: str | None = None) -> URL:
         port=default_params["port"],
         path=default_params["path"],
     )
+
+
+async def cancel_task(task: asyncio.Task | None) -> None:
+    """Cancel the task and wait until it has finished."""
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 def wrap_jsonrpc(method: str, **params):

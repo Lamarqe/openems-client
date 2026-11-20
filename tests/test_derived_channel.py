@@ -410,7 +410,7 @@ async def test_create_derived_channels_from_component() -> None:
         assert "Tower0Module3CellVoltageDifference" in derived_ids
         assert len(derived) == 5
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 def test_derived_channel_unit_of_measurement() -> None:

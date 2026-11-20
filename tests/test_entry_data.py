@@ -113,6 +113,44 @@ async def test_login_raises_auth_error_on_rejected_login() -> None:
         await conn.login_to_server()
 
 
+async def test_injected_session_is_used_for_websockets() -> None:
+    """An injected session is passed to the main and the channel value websocket."""
+    session = MagicMock()
+    with patch(
+        "openems_client.entry_data.jsonrpc_websocket.Server", return_value=MagicMock()
+    ) as server_class:
+        conn = OpenEMSWebSocketConnection(_CONN_PROPS, session=session)
+    assert server_class.call_args.kwargs["session"] is session
+
+    mock_server = _MockJsonrpcServer()
+    mock_server.ws_connect = AsyncMock(
+        side_effect=jsonrpc_base.jsonrpc.TransportError("stop here")
+    )
+    reader = OpenEMSConfigReader(conn, edge_id="0")
+    with (
+        patch(
+            "openems_client.entry_data.jsonrpc_websocket.Server",
+            return_value=mock_server,
+        ) as server_class,
+        pytest.raises(OpenEMSConnectionError),
+    ):
+        await reader.get_channel_values_via_websocket(["_host/Hostname"])
+    assert server_class.call_args.kwargs["session"] is session
+
+
+async def test_stop_waits_for_reconnect_task() -> None:
+    """stop() cancels the reconnect task and waits until it has finished."""
+    conn, _ = _make_conn()
+    conn.enable_reconnect(MagicMock())
+    reconnect_task = conn.reconnect_task
+
+    await conn.stop()
+
+    assert reconnect_task is not None
+    assert reconnect_task.done()
+    assert conn.reconnect_task is None
+
+
 async def test_login_raises_on_not_connected() -> None:
     """login_to_server raises OpenEMSConnectionError when the server is not connected."""
     conn, mock_server = _make_conn()

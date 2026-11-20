@@ -8,6 +8,7 @@ import logging
 import time
 from typing import TypedDict
 
+import aiohttp
 import jsonrpc_base
 import jsonrpc_websocket
 from yarl import URL
@@ -22,7 +23,7 @@ from .const import (
     WEBSOCKET_HEARTBEAT_SECONDS,
 )
 from .exceptions import OpenEMSAuthError, OpenEMSConnectionError, OpenEMSError
-from .helpers import connection_url, wrap_jsonrpc
+from .helpers import cancel_task, connection_url, wrap_jsonrpc
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,8 +63,15 @@ class ConnectionProperties(TypedDict):
 class OpenEMSWebSocketConnection:
     """Class to manage a websocket connection to an OpenEMS system."""
 
-    def __init__(self, conn_props: ConnectionProperties) -> None:
-        """Initialize OpenEMS websocket connection management."""
+    def __init__(
+        self,
+        conn_props: ConnectionProperties,
+        session: aiohttp.ClientSession | None = None,
+    ) -> None:
+        """Initialize OpenEMS websocket connection management.
+
+        Without a session, the connection creates its own and closes it in stop().
+        """
         if conn_props["type"] == CONN_TYPE_CUSTOM_URL:
             url_prop: str = conn_props["url"]  # type: ignore[assignment]
             self.conn_url = URL(url_prop)
@@ -74,9 +82,10 @@ class OpenEMSWebSocketConnection:
             )
         self.username: str = conn_props["username"]
         self.password: str = conn_props["password"]
+        self.session: aiohttp.ClientSession | None = session
 
         self.rpc_server = jsonrpc_websocket.Server(
-            self.conn_url, session=None, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS
+            self.conn_url, session=session, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS
         )
         self.rpc_server_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task | None = None
@@ -162,10 +171,9 @@ class OpenEMSWebSocketConnection:
             self._last_data_received = time.time()
 
     async def stop(self):
-        """Close the connection and stop the reconnect logic andg c."""
-        if self._reconnect_task:
-            self._reconnect_task.cancel()
-            self._reconnect_task = None
+        """Close the connection and stop the reconnect logic."""
+        await cancel_task(self._reconnect_task)
+        self._reconnect_task = None
         await self.rpc_server.close()
 
 
@@ -269,7 +277,7 @@ class OpenEMSConfigReader:
         # create new connection and login
         rpc_server = jsonrpc_websocket.Server(
             url=self.connection.conn_url,
-            session=None,
+            session=self.connection.session,
             heartbeat=WEBSOCKET_HEARTBEAT_SECONDS,
         )
 

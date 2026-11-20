@@ -28,7 +28,7 @@ from .const import (
 )
 from .entry_data import OpenEMSWebSocketConnection, backend_call
 from .exceptions import OpenEMSConnectionError
-from .helpers import connection_url, to_snake_case, wrap_jsonrpc
+from .helpers import cancel_task, connection_url, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
     access_mode,
@@ -192,24 +192,28 @@ class OpenEMSChannel(OpenEMSDataHandler):
                 await _rest_update_oneshot()
                 await asyncio.sleep(update_cycle)
 
-        async def _rest_update_oneshot():
-            """Send REST update command."""
+        async def _rest_post(session: aiohttp.ClientSession):
             auth = aiohttp.BasicAuth(
                 backend.connection.username, backend.connection.password
             )
+            async with session.post(url, json=data, auth=auth) as resp:
+                if resp.status != 200:
+                    _LOGGER.error(
+                        "Error during REST call to update channel %s/%s: HTTP %d: %s",
+                        self.component.name,
+                        self.name,
+                        resp.status,
+                        resp.reason,
+                    )
+
+        async def _rest_update_oneshot():
+            """Send REST update command."""
             try:
-                async with (
-                    aiohttp.ClientSession(raise_for_status=False, auth=auth) as session,
-                    session.post(url, json=data) as resp,
-                ):
-                    if resp.status != 200:
-                        _LOGGER.error(
-                            "Error during REST call to update channel %s/%s: HTTP %d: %s",
-                            self.component.name,
-                            self.name,
-                            resp.status,
-                            resp.reason,
-                        )
+                if (session := backend.connection.session) is not None:
+                    await _rest_post(session)
+                else:
+                    async with aiohttp.ClientSession() as own_session:
+                        await _rest_post(own_session)
             except aiohttp.ClientError as exc:
                 _LOGGER.error(
                     "Cannot send REST update command via URL %s for channel %s/%s: %s",
@@ -854,14 +858,18 @@ class OpenEMSEdge:
         def __init__(self, edge) -> None:
             """Initialize the updater."""
             self._edge: OpenEMSEdge = edge
-            loop = asyncio.get_event_loop()
-            self._fetch_task = loop.create_task(self._update_subscriptions_forever())
+            self._fetch_task: asyncio.Task | None = None
             self._active_subscriptions = []
             self._count = 0
 
-        def stop(self):
-            """Stop the updater."""
-            self._fetch_task.cancel()
+        def start(self):
+            """Start the updater."""
+            self._fetch_task = asyncio.create_task(self._update_subscriptions_forever())
+
+        async def stop(self):
+            """Stop the updater and wait until it has finished."""
+            await cancel_task(self._fetch_task)
+            self._fetch_task = None
 
         def clear(self):
             """Clear the list of active subscriptions."""
@@ -924,6 +932,7 @@ class OpenEMSEdge:
             forward_interval=0,
         )
         self._channel_data_forwarder: asyncio.Task | None = None
+        self._started: bool = False
         self.current_channel_data: dict[str, Any] = {}
         self._channel_subscription_updater = self.OpenEmsEdgeChannelSubscriptionUpdater(
             self
@@ -979,12 +988,24 @@ class OpenEMSEdge:
                 handler.handle_data_update(channel_name, None)
         self._channel_subscription_updater.clear()
 
-    def stop(self):
-        """Stop the connection to edge and all its subscriptions."""
-        self._channel_subscription_updater.stop()
-        if self._channel_data_forwarder is not None:
-            self._channel_data_forwarder.cancel()
-            self._channel_data_forwarder = None
+    def start(self):
+        """Start the subscription updates and the channel data forwarder."""
+        self._started = True
+        self._channel_subscription_updater.start()
+        self._start_channel_data_forwarder()
+
+    async def stop(self):
+        """Stop all subscriptions and wait until the background tasks have finished."""
+        self._started = False
+        await self._channel_subscription_updater.stop()
+        await cancel_task(self._channel_data_forwarder)
+        self._channel_data_forwarder = None
+
+    def _start_channel_data_forwarder(self):
+        if interval := self._advanced_options[CONF_FORWARD_INTERVAL]:
+            self._channel_data_forwarder = asyncio.create_task(
+                self._forwarder_channel_data_forever(interval)
+            )
 
     def edgeConfig(self, params):
         """Jsonrpc callback to receive edge config updates."""
@@ -1108,15 +1129,13 @@ class OpenEMSEdge:
     def set_advanced_options(self, advanced_options: AdvancedOptions):
         """Set advanced config options for the edge."""
         new_interval = advanced_options[CONF_FORWARD_INTERVAL]
-        if new_interval != self._advanced_options[CONF_FORWARD_INTERVAL]:
+        old_interval = self._advanced_options[CONF_FORWARD_INTERVAL]
+        self._advanced_options = advanced_options
+        if new_interval != old_interval and self._started:
             if self._channel_data_forwarder is not None:
                 self._channel_data_forwarder.cancel()
                 self._channel_data_forwarder = None
-            if new_interval:
-                self._channel_data_forwarder = asyncio.get_event_loop().create_task(
-                    self._forwarder_channel_data_forever(new_interval)
-                )
-        self._advanced_options = advanced_options
+            self._start_channel_data_forwarder()
 
 
 class OpenEMSBackend:
@@ -1154,11 +1173,11 @@ class OpenEMSBackend:
         method(params)
 
     def start(self):
-        """Start to subscribe for updates to the edge."""
+        """Start the reconnect logic and the background tasks of the edge."""
         self.connection.enable_reconnect(self.the_edge.set_unavailable)
+        self.the_edge.start()
 
     async def stop(self):
-        """Close the connection to the backend and all internal connection objects."""
+        """Close the connection and wait until all background tasks have finished."""
         await self.connection.stop()
-        if self.the_edge:
-            self.the_edge.stop()
+        await self.the_edge.stop()

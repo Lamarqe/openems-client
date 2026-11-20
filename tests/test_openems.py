@@ -60,7 +60,7 @@ async def test_edge_dispatch_currentData() -> None:
         edge.currentData({"a/b": 1})
         assert edge.current_channel_data == {"a/b": 1}
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_edge_execute_system_restart() -> None:
@@ -71,7 +71,7 @@ async def test_edge_execute_system_restart() -> None:
     try:
         await edge.execute_system_restart()
     finally:
-        edge.stop()
+        await edge.stop()
 
     backend.connection.rpc_server.edgeRpc.assert_awaited_once()
     kwargs = backend.connection.rpc_server.edgeRpc.await_args.kwargs
@@ -117,7 +117,7 @@ async def test_component_boolean_property() -> None:
         assert called
         assert "/_PropertyEnabledCharging" in prop.unique_id()
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 def test_enum_property_behavior() -> None:
@@ -223,7 +223,7 @@ async def test_set_unavailable_clears_values() -> None:
         edge.set_unavailable()
         assert ch.current_value is None
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 def test_number_property_with_template_references() -> None:
@@ -268,7 +268,7 @@ async def test_entity_lifecycle_and_unique_id(dummy_backend) -> None:
         for s in comp_obj.sensors:
             assert s.unique_id().startswith("edge1")
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_register_channel_skips_channels_without_read_access(
@@ -317,7 +317,7 @@ async def test_register_channel_skips_channels_without_read_access(
         assert "Skipping subscription for channel comp1/WriteOnly" in caplog.text
         assert "Skipping subscription for channel comp1/Unknown" in caplog.text
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 def _make_evcs_edge():
@@ -349,7 +349,7 @@ async def test_update_properties_adds_update_group_members() -> None:
             [("enabledCharging", True), ("chargeMode", "EXCESS_POWER")]
         )
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_update_properties_respects_when_condition() -> None:
@@ -359,7 +359,7 @@ async def test_update_properties_respects_when_condition() -> None:
         await comp.get_property("enabledCharging").update_value(False)
         comp.update_config.assert_awaited_once_with([("enabledCharging", False)])
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_update_properties_explicit_values_win() -> None:
@@ -374,7 +374,7 @@ async def test_update_properties_explicit_values_win() -> None:
             [("enabledCharging", True), ("chargeMode", "FORCE_CHARGE")]
         )
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_get_property_by_channel_or_config_name() -> None:
@@ -387,7 +387,7 @@ async def test_get_property_by_channel_or_config_name() -> None:
         assert prop.config_name == "chargeMode"
         assert comp.get_property("unknown") is None
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 def test_to_backend_value_conversions() -> None:
@@ -491,7 +491,7 @@ async def test_heat_pump_sg_ready_properties() -> None:
         comp.update_config.assert_awaited_once_with([("manualState", "RECOMMENDATION")])
 
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_edge_request_errors_are_converted() -> None:
@@ -507,7 +507,7 @@ async def test_edge_request_errors_are_converted() -> None:
         with pytest.raises(OpenEMSError):
             await edge.execute_system_restart()
     finally:
-        edge.stop()
+        await edge.stop()
 
 
 async def test_update_config_raises_when_not_connected() -> None:
@@ -529,4 +529,52 @@ async def test_update_config_raises_when_not_connected() -> None:
                 [("enabledCharging", True)]
             )
     finally:
-        edge.stop()
+        await edge.stop()
+
+
+def _forward_options(interval: int) -> dict:
+    return {
+        "ignore_decreasing_if_total_increasing": False,
+        "forward_interval": interval,
+    }
+
+
+async def test_edge_starts_background_tasks_only_on_start() -> None:
+    """Constructing an edge starts no tasks, start() starts and stop() ends them."""
+    edge = openems.OpenEMSEdge(_make_backend(), "edge-1", {"_host": {"Hostname": "h1"}})
+    edge.set_advanced_options(_forward_options(5))
+    assert edge._channel_subscription_updater._fetch_task is None
+    assert edge._channel_data_forwarder is None
+
+    edge.start()
+    fetch_task = edge._channel_subscription_updater._fetch_task
+    forwarder = edge._channel_data_forwarder
+    assert fetch_task is not None
+    assert forwarder is not None
+
+    await edge.stop()
+
+    assert fetch_task.done()
+    assert forwarder.done()
+    assert edge._channel_subscription_updater._fetch_task is None
+    assert edge._channel_data_forwarder is None
+
+
+async def test_edge_restarts_forwarder_on_interval_change() -> None:
+    """Changing the forward interval of a started edge replaces the forwarder task."""
+    edge = openems.OpenEMSEdge(_make_backend(), "edge-1", {"_host": {"Hostname": "h1"}})
+    edge.start()
+    try:
+        assert edge._channel_data_forwarder is None
+
+        edge.set_advanced_options(_forward_options(5))
+        first_forwarder = edge._channel_data_forwarder
+        assert first_forwarder is not None
+
+        edge.set_advanced_options(_forward_options(10))
+        assert edge._channel_data_forwarder is not first_forwarder
+
+        edge.set_advanced_options(_forward_options(0))
+        assert edge._channel_data_forwarder is None
+    finally:
+        await edge.stop()

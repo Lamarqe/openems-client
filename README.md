@@ -49,6 +49,7 @@ async def main() -> None:
 
     multi_edge = OpenEMSConfigReader.parse_login_response(login_response)
     backend = OpenEMSBackend(connection, edge_id, multi_edge, components)
+    # start() starts the background tasks, stop() closes the connection and ends them
     backend.start()
     ...
     await backend.stop()
@@ -56,6 +57,11 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+An existing `aiohttp.ClientSession` can be passed with
+`OpenEMSWebSocketConnection(conn_props, session=session)`. It is used for all
+websocket and REST requests and is not closed by the library. Without it, the
+connection creates its own session and closes it in `stop()`.
 
 ### Errors
 
