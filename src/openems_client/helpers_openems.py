@@ -24,9 +24,9 @@ def prepare_ref_value(
     expr: str, component: OpenEMSComponent
 ) -> tuple[Template, list[str]]:
     """Parse a template string into a template and channels contained."""
-    linked_channels = []
+    linked_channels: list[str] = []
 
-    def calc_component_reference(matchobj) -> str:
+    def calc_component_reference(matchobj: re.Match[str]) -> str:
         nonlocal linked_channels
         match = matchobj.group()[2:-2]
         if "/" in match:
@@ -40,7 +40,7 @@ def prepare_ref_value(
             comp_ref, channel = component.name, match
 
         # prepare value containers of required channels
-        linked_channel = comp_ref + SLASH_ESC + channel
+        linked_channel: str = comp_ref + SLASH_ESC + channel
         if linked_channel not in linked_channels:
             linked_channels.append(linked_channel)
         return linked_channel

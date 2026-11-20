@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import re
+from typing import Any
 import uuid
 
 from yarl import URL
@@ -25,7 +26,7 @@ def connection_url(type: str, host: str | None = None) -> URL:
     )
 
 
-async def cancel_task(task: asyncio.Task | None) -> None:
+async def cancel_task(task: asyncio.Task[Any] | None) -> None:
     """Cancel the task and wait until it has finished."""
     if task is None:
         return
@@ -34,14 +35,14 @@ async def cancel_task(task: asyncio.Task | None) -> None:
         await task
 
 
-def wrap_jsonrpc(method: str, **params):
+def wrap_jsonrpc(method: str, **params: Any) -> dict[str, Any]:
     """Wrap a method call with parameters into a jsonrpc call."""
-    envelope = {}
-    envelope["jsonrpc"] = "2.0"
-    envelope["method"] = method
-    envelope["params"] = params
-    envelope["id"] = str(uuid.uuid4())
-    return envelope
+    return {
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": str(uuid.uuid4()),
+    }
 
 
 def to_snake_case(name: str) -> str:

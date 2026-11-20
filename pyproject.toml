@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openems-client"
-version = "0.5.0"
+version = "0.6.0"
 description = "Async client for OpenEMS / FENECON FEMS energy management systems"
 readme = "README.md"
 license = "Apache-2.0"
@@ -58,32 +58,6 @@ files = ["src"]
 [[tool.mypy.overrides]]
 module = ["jsonrpc_base.*", "jsonrpc_websocket.*"]
 ignore_missing_imports = true
-
-# TODO: remove once the modules moved from ha_openems are fully annotated
-[[tool.mypy.overrides]]
-module = [
-  "openems_client.config",
-  "openems_client.connection",
-  "openems_client.helpers",
-  "openems_client.helpers_openems",
-  "openems_client.openems",
-]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-disallow_untyped_calls = false
-disallow_any_generics = false
-warn_return_any = false
-warn_unreachable = false
-warn_unused_ignores = false
-disable_error_code = [
-  "arg-type",
-  "assignment",
-  "attr-defined",
-  "literal-required",
-  "misc",
-  "override",
-  "var-annotated",
-]
 
 [tool.ruff]
 required-version = ">=0.17.3"

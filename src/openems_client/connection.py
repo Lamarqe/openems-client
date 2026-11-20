@@ -6,7 +6,7 @@ import contextlib
 import functools
 import logging
 import time
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import aiohttp
 import jsonrpc_base
@@ -44,7 +44,7 @@ async def backend_call[T](
         raise OpenEMSError(str(err)) from err
 
 
-def _ws_loop_ended(host: str | None, task: asyncio.Task) -> None:
+def _ws_loop_ended(host: str | None, task: asyncio.Task[Any]) -> None:
     """Retrieve the exception of an ended websocket loop to avoid unhandled task errors."""
     if not task.cancelled() and (ex := task.exception()):
         _LOGGER.debug("Websocket to host %s closed: %s", host, ex)
@@ -87,13 +87,13 @@ class OpenEMSWebSocketConnection:
         self.rpc_server = jsonrpc_websocket.Server(
             self.conn_url, session=session, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS
         )
-        self.rpc_server_task: asyncio.Task | None = None
-        self._reconnect_task: asyncio.Task | None = None
+        self.rpc_server_task: asyncio.Task[Any] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
         self._last_data_received: float = time.time()
 
-    async def connect_to_server(self):
+    async def connect_to_server(self) -> None:
         "Establish websocket connection."
-        rpc_server_task: asyncio.Task = await backend_call(
+        rpc_server_task: asyncio.Task[Any] = await backend_call(
             self.rpc_server.ws_connect(), CONNECT_TIMEOUT_SECONDS
         )
         rpc_server_task.add_done_callback(
@@ -101,7 +101,7 @@ class OpenEMSWebSocketConnection:
         )
         self.rpc_server_task = rpc_server_task
 
-    async def login_to_server(self) -> dict:
+    async def login_to_server(self) -> dict[str, Any]:
         "Authenticate with username and password."
         if not self.rpc_server.connected:
             raise OpenEMSConnectionError("Not connected to the backend")
@@ -111,7 +111,7 @@ class OpenEMSWebSocketConnection:
             )
         )
 
-    def enable_reconnect(self, connection_lost_callback: Callable):
+    def enable_reconnect(self, connection_lost_callback: Callable[[], None]) -> None:
         """Start a tasks which checks for connection losses tries to reconnect afterwards."""
         self._reconnect_task = asyncio.create_task(
             self._reconnect_forever(connection_lost_callback)
@@ -122,11 +122,13 @@ class OpenEMSWebSocketConnection:
         self._last_data_received = time.time()
 
     @property
-    def reconnect_task(self) -> asyncio.Task | None:
+    def reconnect_task(self) -> asyncio.Task[None] | None:
         """The active reconnect task, if any."""
         return self._reconnect_task
 
-    async def _reconnect_forever(self, connection_lost_callback: Callable):
+    async def _reconnect_forever(
+        self, connection_lost_callback: Callable[[], None]
+    ) -> None:
         while True:
             # check for an existing connection
             if self.rpc_server_task:
@@ -170,7 +172,7 @@ class OpenEMSWebSocketConnection:
                 await asyncio.sleep(10)
             self._last_data_received = time.time()
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Close the connection and stop the reconnect logic."""
         await cancel_task(self._reconnect_task)
         self._reconnect_task = None
@@ -191,11 +193,11 @@ class OpenEMSConfigReader:
         self.connection: OpenEMSWebSocketConnection = connection
         self.edge_id: str | None = edge_id
 
-    def set_edge_id(self, edge_id: str):
+    def set_edge_id(self, edge_id: str) -> None:
         """Set the edge ID to be used for further data requests."""
         self.edge_id = edge_id
 
-    async def read_edge_config(self) -> dict:
+    async def read_edge_config(self) -> dict[str, Any]:
         """Read the component list of the edge, without channels."""
         if not self.edge_id:
             raise EdgeNotDefinedError("No edge ID defined for reading components.")
@@ -205,9 +207,10 @@ class OpenEMSConfigReader:
             self.connection.rpc_server.edgeRpc(edgeId=self.edge_id, payload=edge_call),
             EDGE_CONFIG_TIMEOUT_SECONDS,
         )
-        return r["payload"]["result"]["components"]
+        components: dict[str, Any] = r["payload"]["result"]["components"]
+        return components
 
-    async def read_edge_components(self) -> dict:
+    async def read_edge_components(self) -> dict[str, Any]:
         """Read components of the edge."""
         components = await self.read_edge_config()
 
@@ -219,7 +222,7 @@ class OpenEMSConfigReader:
 
         return components
 
-    async def read_edge_channels(self, components):
+    async def read_edge_channels(self, components: dict[str, Any]) -> None:
         """Load channels of each component."""
         for component_id in list(components):
             edge_component_call = wrap_jsonrpc(
@@ -248,7 +251,7 @@ class OpenEMSConfigReader:
                 )
                 del components[component_id]
 
-    async def read_component_info_channels(self, components: dict):
+    async def read_component_info_channels(self, components: dict[str, Any]) -> None:
         """Read hostname and all component names of an edge."""
 
         # Look up all components which have a channel "_PropertyAlias"
@@ -269,7 +272,9 @@ class OpenEMSConfigReader:
             if component in components:
                 components[component][channel] = value
 
-    async def get_channel_values_via_websocket(self, channels: list[str]) -> dict:
+    async def get_channel_values_via_websocket(
+        self, channels: list[str]
+    ) -> dict[str, Any]:
         """Read channels via dedicated websocket connection."""
         if not self.edge_id:
             raise EdgeNotDefinedError("No edge ID defined for reading components.")
@@ -296,9 +301,9 @@ class OpenEMSConfigReader:
 
         # prepare callback event and subscribe for the required data
         data_received: asyncio.Event = asyncio.Event()
-        data = {}
+        data: dict[str, Any] = {}
 
-        def _handle_callback(**kwargs):
+        def _handle_callback(**kwargs: Any) -> None:
             if kwargs["payload"]["method"] != "currentData":
                 # ignore
                 return
@@ -322,16 +327,17 @@ class OpenEMSConfigReader:
 
         return data
 
-    async def read_edges(self) -> dict:
+    async def read_edges(self) -> dict[str, Any]:
         """Request list of all edges."""
-        return await backend_call(
+        edges: dict[str, Any] = await backend_call(
             self.connection.rpc_server.getEdges(page=0, limit=20, searchParams={})
         )
+        return edges
 
     @staticmethod
-    def parse_login_response(login_response: dict) -> bool:
+    def parse_login_response(login_response: dict[str, Any]) -> bool:
         """Parse login response to determine if backend has multiple edges."""
         if user_dict := login_response.get("user"):
-            return user_dict["hasMultipleEdges"]
+            return bool(user_dict["hasMultipleEdges"])
         # Fallback to true. Should never happen.
         return True

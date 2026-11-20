@@ -576,3 +576,36 @@ async def test_edge_restarts_forwarder_on_interval_change() -> None:
         assert edge._channel_data_forwarder is None
     finally:
         await edge.stop()
+
+
+async def test_write_via_rest_posts_value_with_injected_session() -> None:
+    """A one-shot REST write posts the value with basic auth via the injected session."""
+    backend = _make_backend()
+    backend.connection.username = "user"
+    backend.connection.password = "pass"
+    response = MagicMock(status=200)
+    post_context = MagicMock()
+    post_context.__aenter__ = AsyncMock(return_value=response)
+    post_context.__aexit__ = AsyncMock(return_value=None)
+    backend.connection.session.post = MagicMock(return_value=post_context)
+    component_config = {
+        "_host": {"Hostname": "h1"},
+        "ctrlApiRest0": {
+            "factoryId": "Controller.Api.Rest.ReadWrite",
+            "properties": {"port": 8084},
+        },
+        "meter0": {
+            "properties": {},
+            "channels": [make_channel_json("ActivePower", "INTEGER")],
+        },
+    }
+    edge = openems.OpenEMSEdge(backend, "edge-1", component_config)
+    channel = edge.components["meter0"].sensors[0]
+
+    await channel.write_via_rest(1500, update_cycle=0, timeout=0)
+
+    url = backend.connection.session.post.call_args.args[0]
+    kwargs = backend.connection.session.post.call_args.kwargs
+    assert str(url) == "http://localhost:8084/rest/channel/meter0/ActivePower"
+    assert kwargs["json"] == {"value": 1500}
+    assert kwargs["auth"].login == "user"
