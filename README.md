@@ -24,7 +24,7 @@ Requires Python 3.14 or newer.
 import asyncio
 
 from openems_client.const import CONN_TYPE_DIRECT_EDGE
-from openems_client.entry_data import OpenEMSConfigReader, OpenEMSWebSocketConnection
+from openems_client.connection import OpenEMSConfigReader, OpenEMSWebSocketConnection
 from openems_client.openems import OpenEMSBackend
 
 
@@ -89,7 +89,7 @@ CELL_VOLTAGE_DIFFERENCE = DerivedChannelDefinition(
 
 component = backend.the_edge.components["battery0"]
 for channel in component.create_derived_channels([CELL_VOLTAGE_DIFFERENCE]):
-    channel.register_callback(lambda: print(channel.name, channel.native_value))
+    channel.add_listener(lambda: print(channel.name, channel.value))
 ```
 
 ### Connection types

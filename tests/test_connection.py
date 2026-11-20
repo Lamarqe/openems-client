@@ -1,4 +1,4 @@
-"""Tests for entry_data module (OpenEMSWebSocketConnection and OpenEMSConfigReader)."""
+"""Tests for the connection module (OpenEMSWebSocketConnection and OpenEMSConfigReader)."""
 
 import asyncio
 import contextlib
@@ -10,7 +10,7 @@ import jsonrpc_base.jsonrpc
 import pytest
 
 from openems_client.const import CURRENT_DATA_TIMEOUT_SECONDS
-from openems_client.entry_data import (
+from openems_client.connection import (
     EdgeNotDefinedError,
     OpenEMSConfigReader,
     OpenEMSWebSocketConnection,
@@ -37,7 +37,7 @@ def _make_conn() -> tuple[OpenEMSWebSocketConnection, MagicMock]:
     mock_server.close = AsyncMock()
     mock_server.connected = True
     with patch(
-        "openems_client.entry_data.jsonrpc_websocket.Server",
+        "openems_client.connection.jsonrpc_websocket.Server",
         return_value=mock_server,
     ):
         conn = OpenEMSWebSocketConnection(_CONN_PROPS)
@@ -117,7 +117,7 @@ async def test_injected_session_is_used_for_websockets() -> None:
     """An injected session is passed to the main and the channel value websocket."""
     session = MagicMock()
     with patch(
-        "openems_client.entry_data.jsonrpc_websocket.Server", return_value=MagicMock()
+        "openems_client.connection.jsonrpc_websocket.Server", return_value=MagicMock()
     ) as server_class:
         conn = OpenEMSWebSocketConnection(_CONN_PROPS, session=session)
     assert server_class.call_args.kwargs["session"] is session
@@ -129,7 +129,7 @@ async def test_injected_session_is_used_for_websockets() -> None:
     reader = OpenEMSConfigReader(conn, edge_id="0")
     with (
         patch(
-            "openems_client.entry_data.jsonrpc_websocket.Server",
+            "openems_client.connection.jsonrpc_websocket.Server",
             return_value=mock_server,
         ) as server_class,
         pytest.raises(OpenEMSConnectionError),
@@ -269,7 +269,7 @@ async def test_reconnect_forever_data_timeout_calls_close() -> None:
     conn.rpc_server_task = pending_task
 
     stale_time = time.time() - CURRENT_DATA_TIMEOUT_SECONDS - 1
-    with patch("openems_client.entry_data.time.time", return_value=stale_time):
+    with patch("openems_client.connection.time.time", return_value=stale_time):
         conn.notify_data_received()
 
     async def fake_close() -> None:
@@ -929,7 +929,7 @@ async def test_get_channel_values_returns_current_data() -> None:
     mock_server.subscribeEdges = AsyncMock(side_effect=_subscribe_side_effect)
 
     with patch(
-        "openems_client.entry_data.jsonrpc_websocket.Server",
+        "openems_client.connection.jsonrpc_websocket.Server",
         return_value=mock_server,
     ):
         reader = OpenEMSConfigReader(conn, edge_id="0")
@@ -970,7 +970,7 @@ async def test_get_channel_values_ws_loop_exception_is_retrieved() -> None:
     loop.set_exception_handler(lambda _loop, context: unretrieved.append(context))
     try:
         with patch(
-            "openems_client.entry_data.jsonrpc_websocket.Server",
+            "openems_client.connection.jsonrpc_websocket.Server",
             return_value=mock_server,
         ):
             reader = OpenEMSConfigReader(conn, edge_id="0")
@@ -998,7 +998,7 @@ async def test_get_channel_values_ignores_non_current_data_push() -> None:
     mock_server.subscribeEdges = AsyncMock(side_effect=_subscribe_side_effect)
 
     with patch(
-        "openems_client.entry_data.jsonrpc_websocket.Server",
+        "openems_client.connection.jsonrpc_websocket.Server",
         return_value=mock_server,
     ):
         reader = OpenEMSConfigReader(conn, edge_id="0")
@@ -1026,7 +1026,7 @@ async def test_get_channel_values_timeout_raises() -> None:
 
     with (
         patch(
-            "openems_client.entry_data.jsonrpc_websocket.Server",
+            "openems_client.connection.jsonrpc_websocket.Server",
             return_value=mock_server,
         ),
         patch("asyncio.wait_for", new=_fake_wait_for),

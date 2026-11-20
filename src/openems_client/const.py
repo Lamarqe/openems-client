@@ -4,13 +4,6 @@ from typing import TypedDict
 
 SLASH_ESC = "_s_l_a_s_h_"
 
-CONF_COMPONENTS: str = "components"
-CONF_ADVANCED_OPTIONS: str = "advanced_options"
-CONF_IGNORE_DECREASING_IF_TOTAL_INCREASING: str = (
-    "ignore_decreasing_if_total_increasing"
-)
-CONF_FORWARD_INTERVAL: str = "forward_interval"
-
 CONN_TYPE_DIRECT_EDGE: str = "direct_edge"
 CONN_TYPE_LOCAL_FEMS: str = "local_fems"
 CONN_TYPE_LOCAL_OPENEMS: str = "local_openems"
@@ -25,24 +18,6 @@ REQUEST_TIMEOUT_SECONDS = 10
 EDGE_CONFIG_TIMEOUT_SECONDS = 30
 AUTHENTICATION_FAILED_ERROR_CODE = 1003
 WEBSOCKET_HEARTBEAT_SECONDS = 60
-
-
-class AdvancedOptions(TypedDict):
-    """Type containing the advanced options."""
-
-    # Right after a restart, for some systems, the FEMS backend reports zero or unexplainably
-    # small values for total amount channels. This settles typically after only a few seconds.
-    # This parameter allows to ignore such values.
-    ignore_decreasing_if_total_increasing: bool
-    # 0 = forward currentData updates immediately; >0 = forward at most every N seconds.
-    forward_interval: int
-
-
-class ConfigOptions(TypedDict):
-    """Type containing the config entry options."""
-
-    components: dict[str, bool]
-    advanced_options: AdvancedOptions
 
 
 class ConnectionType(TypedDict):

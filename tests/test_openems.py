@@ -111,7 +111,7 @@ async def test_component_boolean_property() -> None:
             nonlocal called
             called = True
 
-        prop.register_callback(cb)
+        prop.add_listener(cb)
         edge.currentData({"comp1/_PropertyEnabledCharging": 1})
         assert prop.current_value is True
         assert called
@@ -141,10 +141,10 @@ def test_time_property_behavior() -> None:
     time_json = {"id": "_PropertyManualTargetTime", "type": "STRING", "unit": "u"}
     prop = openems.OpenEMSTimeProperty(component=comp, channel_json=time_json)
     prop.handle_data_update("_PropertyManualTargetTime", "12:34")
-    assert prop.native_value == time(12, 34)
+    assert prop.value == time(12, 34)
     # invalid time string
     prop.handle_data_update("_PropertyManualTargetTime", "nope")
-    assert prop.native_value is None
+    assert prop.value is None
 
 
 def test_number_property_multiplier_and_limits() -> None:
@@ -187,23 +187,28 @@ def _make_component_with_edge(name: str = "ctrlEvcs1"):
     return comp
 
 
-def test_channel_register_unregister_and_notify() -> None:
-    """Test register and unregister behavior for channels and notify callback."""
+def test_channel_listeners() -> None:
+    """All listeners are notified; the channel is subscribed while it has listeners."""
     comp = _make_component_with_edge()
     chan_json = {"id": "SomeSensor", "type": "INTEGER", "unit": "u"}
     chan = openems.OpenEMSChannel(component=comp, channel_json=chan_json)
+    calls: list[str] = []
 
-    called = False
+    remove_first = chan.add_listener(lambda: calls.append("first"))
+    remove_second = chan.add_listener(lambda: calls.append("second"))
+    handlers = comp.edge._registered_handlers
+    assert chan in handlers["ctrlEvcs1/SomeSensor"]
 
-    def cb():
-        nonlocal called
-        called = True
+    chan.handle_data_update("ctrlEvcs1/SomeSensor", 5)
+    assert calls == ["first", "second"]
 
-    chan.register_callback(cb)
-    chan.notify_ha()
-    assert called
-    chan.unregister_callback()
-    assert chan.callback is None
+    remove_first()
+    assert chan in handlers["ctrlEvcs1/SomeSensor"]
+    chan.handle_data_update("ctrlEvcs1/SomeSensor", 6)
+    assert calls == ["first", "second", "second"]
+
+    remove_second()
+    assert chan not in handlers["ctrlEvcs1/SomeSensor"]
 
 
 async def test_set_unavailable_clears_values() -> None:
@@ -532,17 +537,10 @@ async def test_update_config_raises_when_not_connected() -> None:
         await edge.stop()
 
 
-def _forward_options(interval: int) -> dict:
-    return {
-        "ignore_decreasing_if_total_increasing": False,
-        "forward_interval": interval,
-    }
-
-
 async def test_edge_starts_background_tasks_only_on_start() -> None:
     """Constructing an edge starts no tasks, start() starts and stop() ends them."""
     edge = openems.OpenEMSEdge(_make_backend(), "edge-1", {"_host": {"Hostname": "h1"}})
-    edge.set_advanced_options(_forward_options(5))
+    edge.set_forward_interval(5)
     assert edge._channel_subscription_updater._fetch_task is None
     assert edge._channel_data_forwarder is None
 
@@ -567,14 +565,14 @@ async def test_edge_restarts_forwarder_on_interval_change() -> None:
     try:
         assert edge._channel_data_forwarder is None
 
-        edge.set_advanced_options(_forward_options(5))
+        edge.set_forward_interval(5)
         first_forwarder = edge._channel_data_forwarder
         assert first_forwarder is not None
 
-        edge.set_advanced_options(_forward_options(10))
+        edge.set_forward_interval(10)
         assert edge._channel_data_forwarder is not first_forwarder
 
-        edge.set_advanced_options(_forward_options(0))
+        edge.set_forward_interval(0)
         assert edge._channel_data_forwarder is None
     finally:
         await edge.stop()

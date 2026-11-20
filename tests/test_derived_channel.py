@@ -164,37 +164,37 @@ def _make_derived(
 # ---------------------------------------------------------------------------
 
 
-def test_voltage_difference_native_value_none_before_any_update() -> None:
-    """native_value is None until both reference channels carry a value."""
+def test_voltage_difference_value_none_before_any_update() -> None:
+    """value is None until both reference channels carry a value."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
-    assert sensor.native_value is None
+    assert sensor.value is None
 
 
-def test_voltage_difference_native_value_none_with_partial_update() -> None:
-    """native_value remains None when only one of the two refs is set."""
+def test_voltage_difference_value_none_with_partial_update() -> None:
+    """value remains None when only one of the two refs is set."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
 
-    assert sensor.native_value is None
+    assert sensor.value is None
 
 
 def test_voltage_difference_computes_correctly() -> None:
-    """native_value equals MaxCellVoltage - MinCellVoltage once both are set."""
+    """value equals MaxCellVoltage - MinCellVoltage once both are set."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
 
-    assert sensor.native_value == pytest.approx(200.0)
+    assert sensor.value == pytest.approx(200.0)
 
 
 def test_voltage_difference_updates_on_new_value() -> None:
-    """native_value reflects the latest reference-channel values."""
+    """value reflects the latest reference-channel values."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
@@ -202,7 +202,7 @@ def test_voltage_difference_updates_on_new_value() -> None:
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
     sensor.handle_data_update("battery0/MaxCellVoltage", 3600)
 
-    assert sensor.native_value == pytest.approx(300.0)
+    assert sensor.value == pytest.approx(300.0)
 
 
 def test_voltage_difference_callback_called_on_value_change() -> None:
@@ -211,7 +211,7 @@ def test_voltage_difference_callback_called_on_value_change() -> None:
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
-    sensor.register_callback(lambda: calls.append(None))
+    sensor.add_listener(lambda: calls.append(None))
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
@@ -225,7 +225,7 @@ def test_voltage_difference_callback_not_called_when_value_unchanged() -> None:
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
-    sensor.register_callback(lambda: calls.append(None))
+    sensor.add_listener(lambda: calls.append(None))
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
@@ -241,11 +241,11 @@ def test_voltage_difference_ignores_non_reference_channel() -> None:
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
-    sensor.register_callback(lambda: calls.append(None))
+    sensor.add_listener(lambda: calls.append(None))
 
     sensor.handle_data_update("battery0/SomeOtherChannel", 9999)
 
-    assert sensor.native_value is None
+    assert sensor.value is None
     assert len(calls) == 0
 
 
@@ -255,15 +255,15 @@ def test_voltage_difference_becomes_none_on_null_reference() -> None:
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
-    sensor.register_callback(lambda: calls.append(None))
+    sensor.add_listener(lambda: calls.append(None))
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
-    assert sensor.native_value == pytest.approx(200.0)
+    assert sensor.value == pytest.approx(200.0)
 
     sensor.handle_data_update("battery0/MaxCellVoltage", None)
 
-    assert sensor.native_value is None
+    assert sensor.value is None
 
 
 # ---------------------------------------------------------------------------
@@ -271,37 +271,36 @@ def test_voltage_difference_becomes_none_on_null_reference() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_voltage_difference_register_callback_adds_to_edge() -> None:
-    """register_callback subscribes reference channels on the edge."""
+def test_voltage_difference_add_listener_subscribes_at_edge() -> None:
+    """The first listener subscribes the reference channels at the edge."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
-    sensor.register_callback(lambda: None)
+    sensor.add_listener(lambda: None)
 
     registered = comp.edge.registered_channels
     assert any("MaxCellVoltage" in k for k in registered)
     assert any("MinCellVoltage" in k for k in registered)
 
 
-def test_voltage_difference_unregister_callback_removes_handler() -> None:
-    """unregister_callback removes the sensor from all edge subscriptions."""
+def test_voltage_difference_remove_listener_unsubscribes() -> None:
+    """Removing the last listener removes the sensor from all edge subscriptions."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
-    sensor.register_callback(lambda: None)
-    sensor.unregister_callback()
+    remove_listener = sensor.add_listener(lambda: None)
+    remove_listener()
 
-    assert sensor.callback is None
     for handlers in comp.edge.registered_channels.values():
         assert sensor not in handlers
 
 
-def test_voltage_difference_no_callback_after_unregister() -> None:
-    """After unregistering, handle_data_update must not invoke the callback."""
+def test_voltage_difference_no_call_after_remove_listener() -> None:
+    """After removing the listener, handle_data_update must not invoke it."""
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
     calls: list[None] = []
-    sensor.register_callback(lambda: calls.append(None))
-    sensor.unregister_callback()
+    remove_listener = sensor.add_listener(lambda: calls.append(None))
+    remove_listener()
 
     sensor.handle_data_update("battery0/MaxCellVoltage", 3500)
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
@@ -353,7 +352,7 @@ def test_tower_cell_voltage_difference_computes_max_minus_min() -> None:
         sensor.handle_data_update(f"battery0/{cid}", 3300)
     sensor.handle_data_update(f"battery0/{cell_ids_m0[-1]}", 3360)
 
-    assert sensor.native_value == pytest.approx(60.0)
+    assert sensor.value == pytest.approx(60.0)
 
 
 def test_tower_cell_voltage_difference_partial_update_stays_none() -> None:
@@ -371,7 +370,7 @@ def test_tower_cell_voltage_difference_partial_update_stays_none() -> None:
     )
     sensor.handle_data_update(f"battery0/{cell_ids_m0[0]}", 3300)
 
-    assert sensor.native_value is None
+    assert sensor.value is None
 
 
 # ---------------------------------------------------------------------------
@@ -475,4 +474,4 @@ def test_value_fn_error_results_in_none() -> None:
     sensor.handle_data_update("battery0/MaxCellVoltage", "invalid")
     sensor.handle_data_update("battery0/MinCellVoltage", 3300)
 
-    assert sensor.native_value is None
+    assert sensor.value is None

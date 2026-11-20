@@ -15,18 +15,8 @@ import jsonrpc_base
 from yarl import URL
 
 from .config import OpenEMSConfig
-from .const import (
-    CONF_ADVANCED_OPTIONS,
-    CONF_COMPONENTS,
-    CONF_FORWARD_INTERVAL,
-    CONN_TYPE_REST,
-    CONN_TYPE_WEB_FENECON,
-    CONN_TYPES,
-    SLASH_ESC,
-    AdvancedOptions,
-    ConfigOptions,
-)
-from .entry_data import OpenEMSWebSocketConnection, backend_call
+from .connection import OpenEMSWebSocketConnection, backend_call
+from .const import CONN_TYPE_REST, CONN_TYPE_WEB_FENECON, CONN_TYPES, SLASH_ESC
 from .exceptions import OpenEMSConnectionError
 from .helpers import cancel_task, connection_url, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
@@ -56,7 +46,7 @@ class OpenEMSDataHandler:
         """Initialize the handler."""
         self.component: OpenEMSComponent = component
         self.name: str = name
-        self.callback: Callable | None = None
+        self._listeners: list[Callable[[], None]] = []
         self._current_value: Any = None
 
     @abstractmethod
@@ -64,21 +54,36 @@ class OpenEMSDataHandler:
         """Handle a data update from the backend."""
 
     @abstractmethod
-    def register_callback(self, callback: Callable):
-        """Register callback."""
+    def _subscribe(self) -> None:
+        """Subscribe the channels needed for the value at the edge."""
 
     @abstractmethod
-    def unregister_callback(self):
-        """Remove callback."""
+    def _unsubscribe(self) -> None:
+        """Remove the subscriptions of the channel at the edge."""
 
     @property
-    def native_value(self) -> float | None:
+    def value(self) -> float | None:
         """Return the value of the channel."""
 
-    def notify_ha(self):
-        """Notify HA of a value change."""
-        if self.callback:
-            self.callback()
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Add a listener called on value changes, return a function to remove it.
+
+        The channel is subscribed at the edge while it has listeners.
+        """
+        if not self._listeners:
+            self._subscribe()
+        self._listeners.append(listener)
+
+        def remove_listener() -> None:
+            self._listeners.remove(listener)
+            if not self._listeners:
+                self._unsubscribe()
+
+        return remove_listener
+
+    def _notify_listeners(self) -> None:
+        for listener in list(self._listeners):
+            listener()
 
     def unique_id(self) -> str:
         """Generate unique ID for the channel."""
@@ -122,7 +127,7 @@ class OpenEMSChannel(OpenEMSDataHandler):
         """Handle a new entity value and notify Home Assistant."""
         if value != self._current_value:
             self._current_value = value
-            self.notify_ha()
+            self._notify_listeners()
 
     def handle_data_update(self, channel_name, value: str | float | None) -> None:
         """Handle a data update from the backend."""
@@ -135,7 +140,7 @@ class OpenEMSChannel(OpenEMSDataHandler):
             self.handle_current_value(None)
 
     @property
-    def native_value(self) -> str | int | None:
+    def value(self) -> str | int | None:
         """Return the value of the sensor."""
         if isinstance(self._current_value, (str, int)):
             return self._current_value
@@ -147,15 +152,11 @@ class OpenEMSChannel(OpenEMSDataHandler):
         """Return the current value of the channel."""
         return self._current_value
 
-    def register_callback(self, callback: Callable):
-        """Register callback."""
-        self.callback = callback
+    def _subscribe(self) -> None:
         channel_names = {self.component.name + "/" + self.name}
         self.component.edge.register_channel(channel_names, self)
 
-    def unregister_callback(self):
-        """Remove callback."""
-        self.callback = None
+    def _unsubscribe(self) -> None:
         if self._rest_update_task is not None:
             self._rest_update_task.cancel()
             self._rest_update_task = None
@@ -291,17 +292,13 @@ class OpenEMSDerivedChannel(OpenEMSDataHandler):
             component.name + "/" + channel_id for channel_id in channel_ids
         )
 
-    def register_callback(self, callback: Callable):
-        """Register callback."""
-        self.callback = callback
+    def _subscribe(self) -> None:
         channel_names = set(self.reference_channels) | {
             self.component.name + "/" + self.name,
         }
         self.component.edge.register_channel(channel_names, self)
 
-    def unregister_callback(self):
-        """Remove callback."""
-        self.callback = None
+    def _unsubscribe(self) -> None:
         self.component.edge.unregister_channel(self)
 
     def _source_value(
@@ -331,11 +328,11 @@ class OpenEMSDerivedChannel(OpenEMSDataHandler):
                 channel_value = self._calculate()
                 if channel_value != self._current_value:
                     self._current_value = channel_value
-                    self.notify_ha()
+                    self._notify_listeners()
             return
 
     @property
-    def native_value(self) -> float | None:
+    def value(self) -> float | None:
         """Return the value of the derived channel."""
         if isinstance(self._current_value, (float, int)):
             return self._current_value
@@ -426,7 +423,7 @@ class OpenEMSTimeProperty(OpenEMSProperty):
         self.handle_current_value(new_val)
 
     @property
-    def native_value(self) -> time | None:
+    def value(self) -> time | None:
         """Return the value of the time entity."""
         if isinstance(self._current_value, time):
             return self._current_value
@@ -441,10 +438,6 @@ class OpenEMSTimeProperty(OpenEMSProperty):
             return time.fromisoformat(value).strftime("%H:%M")
         except (TypeError, ValueError) as err:
             raise ValueError(f"Invalid time: {value}") from err
-
-    async def async_set_value(self, value: time) -> None:
-        """Update the selected time."""
-        await super().update_value(self.to_backend_value(value))
 
 
 class OpenEMSNumberProperty(OpenEMSProperty):
@@ -474,7 +467,7 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         self.reference_channels: dict[str, str | float | None] = {}
 
     @property
-    def native_value(self) -> float | None:
+    def value(self) -> float | None:
         """Return the value of the number property."""
         if isinstance(self._current_value, (float, int)):
             return self._current_value
@@ -489,7 +482,7 @@ class OpenEMSNumberProperty(OpenEMSProperty):
                 self.reference_channels[channel_reference] = value
                 if self._update_config():
                     # config vars changed. Update the entity in HA
-                    self.notify_ha()
+                    self._notify_listeners()
             return
 
         if isinstance(value, (float, int)):
@@ -627,9 +620,7 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         if not (lower_references or upper_references):
             self._update_config()
 
-    def register_callback(self, callback: Callable):
-        """Register callback."""
-        self.callback = callback
+    def _subscribe(self) -> None:
         channel_names = {x.replace(SLASH_ESC, "/") for x in self.reference_channels} | {
             self.component.name + "/" + self.name,
         }
@@ -687,7 +678,6 @@ class OpenEMSComponent:
         self.boolean_properties: list[OpenEMSBooleanProperty] = []
         self.time_properties: list[OpenEMSTimeProperty] = []
         self.channel_ids: list[str] = []
-        self.create_entities: bool = False
 
     def init_channels(self, channels: list[dict[str, Any]]):
         """Parse and initialize the components channels."""
@@ -927,10 +917,8 @@ class OpenEMSEdge:
         """Initialize the edge."""
         self.backend: OpenEMSBackend = backend
         self._id: str = id
-        self._advanced_options: AdvancedOptions = AdvancedOptions(
-            ignore_decreasing_if_total_increasing=False,
-            forward_interval=0,
-        )
+        # 0 forwards channel data immediately, >0 at most every N seconds
+        self._forward_interval: int = 0
         self._channel_data_forwarder: asyncio.Task | None = None
         self._started: bool = False
         self.current_channel_data: dict[str, Any] = {}
@@ -1002,9 +990,9 @@ class OpenEMSEdge:
         self._channel_data_forwarder = None
 
     def _start_channel_data_forwarder(self):
-        if interval := self._advanced_options[CONF_FORWARD_INTERVAL]:
+        if self._forward_interval:
             self._channel_data_forwarder = asyncio.create_task(
-                self._forwarder_channel_data_forever(interval)
+                self._forwarder_channel_data_forever(self._forward_interval)
             )
 
     def edgeConfig(self, params):
@@ -1113,25 +1101,11 @@ class OpenEMSEdge:
             )
         )
 
-    def set_config_options(self, options: ConfigOptions):
-        """Set config options for the edge and its components."""
-        for component_name, is_enabled in options.get(CONF_COMPONENTS, {}).items():
-            if component := self.components.get(component_name):
-                component.create_entities = is_enabled
-        if advanced_options := options.get(CONF_ADVANCED_OPTIONS):
-            self.set_advanced_options(advanced_options)
-
-    @property
-    def advanced_options(self) -> AdvancedOptions:
-        """Return the advanced options."""
-        return self._advanced_options
-
-    def set_advanced_options(self, advanced_options: AdvancedOptions):
-        """Set advanced config options for the edge."""
-        new_interval = advanced_options[CONF_FORWARD_INTERVAL]
-        old_interval = self._advanced_options[CONF_FORWARD_INTERVAL]
-        self._advanced_options = advanced_options
-        if new_interval != old_interval and self._started:
+    def set_forward_interval(self, seconds: int) -> None:
+        """Forward channel data at most every N seconds, 0 forwards it immediately."""
+        old_interval = self._forward_interval
+        self._forward_interval = seconds
+        if seconds != old_interval and self._started:
             if self._channel_data_forwarder is not None:
                 self._channel_data_forwarder.cancel()
                 self._channel_data_forwarder = None
