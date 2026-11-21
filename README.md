@@ -96,7 +96,8 @@ Requests to the backend raise the exceptions of `openems_client.exceptions`:
 
 - `OpenEMSConnectionError`: the backend cannot be reached or does not respond in time.
 - `OpenEMSAuthError`: the backend rejects the login.
-- `OpenEMSError`: the base class of both, also raised when the backend rejects a request.
+- `OpenEMSTimeoutError`: an operation of the edge, e.g. a system update, did not finish in time.
+- `OpenEMSError`: the base class of all of them, also raised when the backend rejects a request.
 
 REST writes (`channel.write_via_rest`) raise these exceptions as well. With
 `update_cycle > 0` the call returns after the first write and repeats the
@@ -173,6 +174,31 @@ component = backend.the_edge.components["battery0"]
 for channel in component.create_derived_channels([CELL_VOLTAGE_DIFFERENCE]):
     channel.add_listener(lambda: print(channel.name, channel.value))
 ```
+
+### System update
+
+```python
+from openems_client.system_update import UpdateStatus
+
+state = await edge.get_system_update_state()
+if state.status is UpdateStatus.AVAILABLE:
+    print(state.installed_version, "->", state.latest_version)
+    state = await edge.install_system_update(
+        lambda s: print(s.status, s.percent_completed)
+    )
+```
+
+`get_system_update_state()` returns a `SystemUpdateState` with `status`
+(`UP_TO_DATE`, `AVAILABLE`, `RUNNING`, `UNKNOWN`), `installed_version`,
+`latest_version` and, while running, `percent_completed`.
+
+`install_system_update()` triggers the update and polls its state every
+`poll_interval` seconds (default 10), passing each state to the optional
+callback. While the edge restarts, the state is `UNKNOWN`; the connection loss
+is expected. It returns once the edge reports to be up to date, raises the
+error of the update request if the edge rejects it, and raises
+`OpenEMSTimeoutError` if the update did not finish within `timeout` seconds
+(default 900).
 
 ### Connection types
 

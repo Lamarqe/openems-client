@@ -11,3 +11,7 @@ class OpenEMSConnectionError(OpenEMSError):
 
 class OpenEMSAuthError(OpenEMSError):
     """The backend rejects the login."""
+
+
+class OpenEMSTimeoutError(OpenEMSError):
+    """An operation of the edge, eg a system update, did not finish in time."""

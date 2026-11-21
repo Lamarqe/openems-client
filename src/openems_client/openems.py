@@ -18,7 +18,7 @@ from yarl import URL
 from .config import OpenEMSConfig
 from .connection import OpenEMSWebSocketConnection, backend_call
 from .const import CONN_TYPE_REST, CONN_TYPE_WEB_FENECON, CONN_TYPES, SLASH_ESC
-from .exceptions import OpenEMSConnectionError, OpenEMSError
+from .exceptions import OpenEMSConnectionError, OpenEMSError, OpenEMSTimeoutError
 from .helpers import cancel_task, connection_url, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
@@ -27,6 +27,7 @@ from .helpers_openems import (
     prepare_ref_value,
 )
 from .model import ChannelKind, Quantity, Severity, channel_key, severity, unit_info
+from .system_update import SystemUpdateState, UpdateStatus, parse_system_update_state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1195,8 +1196,8 @@ class OpenEMSEdge:
         "Return the list of all subscribed channels."
         return self._registered_handlers
 
-    async def get_system_update_state(self) -> dict[str, Any]:
-        """Read getSystemUpdateState response."""
+    async def get_system_update_state(self) -> SystemUpdateState:
+        """Read the state of the system update."""
         system_update_state_call = wrap_jsonrpc("getSystemUpdateState")
         edge_call = wrap_jsonrpc(
             "componentJsonApi", componentId="_host", payload=system_update_state_call
@@ -1206,8 +1207,7 @@ class OpenEMSEdge:
                 edgeId=self._id, payload=edge_call
             )
         )
-        update_state: dict[str, Any] = result["payload"]["result"]
-        return update_state
+        return parse_system_update_state(result["payload"]["result"])
 
     async def execute_system_update(self) -> None:
         """Trigger executeSystemUpdate request."""
@@ -1221,6 +1221,55 @@ class OpenEMSEdge:
                 edgeId=self._id, payload=edge_call
             ),
             timeout=None,
+        )
+
+    async def install_system_update(
+        self,
+        on_progress: Callable[[SystemUpdateState], None] | None = None,
+        *,
+        timeout: float = 900,
+        poll_interval: float = 10,
+    ) -> SystemUpdateState:
+        """Install the available system update and wait until it is finished.
+
+        The state is polled every poll_interval seconds and passed to on_progress.
+        It is UNKNOWN while the edge does not respond, eg while it restarts.
+        Return the state once the edge reports to be up to date. Raise the error of
+        the update request if the edge rejects it, OpenEMSTimeoutError if the update
+        did not finish within timeout seconds.
+        """
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        update_task = asyncio.create_task(self.execute_system_update())
+        try:
+            # give the edge some time to start the update before checking progress
+            await asyncio.sleep(min(0.5, poll_interval))
+            while loop.time() < end:
+                try:
+                    state = await self.get_system_update_state()
+                except OpenEMSError:
+                    state = SystemUpdateState(status=UpdateStatus.UNKNOWN)
+                if on_progress is not None:
+                    on_progress(state)
+                # connection losses are expected, as the edge restarts during the update
+                if (
+                    update_task.done()
+                    and (error := update_task.exception()) is not None
+                    and not isinstance(error, OpenEMSConnectionError)
+                ):
+                    raise error
+                if state.status is UpdateStatus.UP_TO_DATE:
+                    return state
+                await asyncio.sleep(poll_interval)
+        finally:
+            if not update_task.done():
+                update_task.cancel()
+            elif not update_task.cancelled():
+                # retrieve the result, a connection loss of the restarting edge is expected
+                update_task.exception()
+        raise OpenEMSTimeoutError(
+            f"System update of edge {self.hostname} did not finish within "
+            f"{timeout} seconds"
         )
 
     async def execute_system_restart(self) -> None:
