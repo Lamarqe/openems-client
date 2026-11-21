@@ -772,10 +772,11 @@ async def test_read_edge_channels_skips_component_on_transport_error() -> None:
         },
     }
 
-    await reader.read_edge_channels(components)
+    skipped = await reader.read_edge_channels(components)
 
     assert "_appManager" in components
     assert "_componentManager" not in components
+    assert skipped == ["_componentManager"]
 
 
 async def test_read_edge_channels_skips_component_on_protocol_error() -> None:

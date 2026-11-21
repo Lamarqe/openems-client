@@ -22,6 +22,7 @@ from .const import (
     REQUEST_TIMEOUT_SECONDS,
     WEBSOCKET_HEARTBEAT_SECONDS,
 )
+from .edge_config import EdgeConfigChange, edge_config_change
 from .exceptions import OpenEMSAuthError, OpenEMSConnectionError, OpenEMSError
 from .helpers import cancel_task, connection_url, wrap_jsonrpc
 
@@ -222,8 +223,28 @@ class OpenEMSConfigReader:
 
         return components
 
-    async def read_edge_channels(self, components: dict[str, Any]) -> None:
-        """Load channels of each component."""
+    async def check_edge_components(
+        self, cached: dict[str, Any]
+    ) -> tuple[dict[str, Any], EdgeConfigChange]:
+        """Read the components of the edge again and compare them with cached ones.
+
+        Return the components and their structural change. Raise OpenEMSError if the
+        channels of a component cannot be read, as the change would be incomplete.
+        """
+        components = await self.read_edge_config()
+        if skipped := await self.read_edge_channels(components):
+            raise OpenEMSError(
+                f"Cannot read the channels of the components {sorted(skipped)}"
+            )
+        await self.read_component_info_channels(components)
+        return components, edge_config_change(cached, components)
+
+    async def read_edge_channels(self, components: dict[str, Any]) -> list[str]:
+        """Load channels of each component.
+
+        Components whose channels cannot be read are removed, return their names.
+        """
+        skipped: list[str] = []
         for component_id in list(components):
             edge_component_call = wrap_jsonrpc(
                 "getChannelsOfComponent",
@@ -250,6 +271,8 @@ class OpenEMSConfigReader:
                     component_id,
                 )
                 del components[component_id]
+                skipped.append(component_id)
+        return skipped
 
     async def read_component_info_channels(self, components: dict[str, Any]) -> None:
         """Read hostname and all component names of an edge."""

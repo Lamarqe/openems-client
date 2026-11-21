@@ -63,6 +63,22 @@ An existing `aiohttp.ClientSession` can be passed with
 websocket and REST requests and is not closed by the library. Without it, the
 connection creates its own session and closes it in `stop()`.
 
+### Checking a cached configuration
+
+Reading the components and their channels takes one request per component, so
+consumers usually cache the result of `read_edge_components()`. To find out
+whether the cached configuration is still current, read it again and compare:
+
+```python
+components, change = await reader.check_edge_components(cached)
+if change:  # components added, removed or changed (factoryId or channels)
+    print(change.added, change.removed, change.changed)
+```
+
+Property values and aliases are not part of the change, as they are provided by
+the `_Property` channels. If the channels of a component cannot be read, an
+`OpenEMSError` is raised instead of reporting the component as removed.
+
 ### Errors
 
 Requests to the backend raise the exceptions of `openems_client.exceptions`:
