@@ -151,3 +151,14 @@ async def test_rest_write_cyclic_ends_after_timeout() -> None:
 
     assert 2 <= post.call_count <= 5
     assert channel._rest_update_task.done()
+
+
+async def test_rest_write_basic_auth_uses_latin1() -> None:
+    """The credentials are encoded as latin-1, as with the former aiohttp.BasicAuth."""
+    edge = _make_edge(rest=True)
+    edge.backend.connection.password = "pä"
+    post = _mock_post(edge, status=200)
+
+    await _sensors(edge)[0].write_via_rest(1, update_cycle=0, timeout=0)
+
+    assert post.call_args.kwargs["headers"] == {"Authorization": "Basic dXNlcjpw5A=="}

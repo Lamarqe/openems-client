@@ -165,3 +165,15 @@ def test_invalid_url_raises_value_error() -> None:
     """Invalid connection properties are reported as ValueError."""
     with pytest.raises(ValueError):
         OpenEMSClient(ConnectionProperties(**{**CONN_PROPS, "host": "in valid"}))
+
+
+async def test_failed_connect_in_context_closes_once() -> None:
+    """A failed connect closes the connection, leaving the context does not again."""
+    client = _client()
+    client.connection.connect_to_server.side_effect = OpenEMSConnectionError("refused")
+
+    with pytest.raises(OpenEMSConnectionError):
+        async with client:
+            await client.connect()
+
+    client.connection.stop.assert_awaited_once()

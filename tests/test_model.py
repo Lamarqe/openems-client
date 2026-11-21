@@ -83,6 +83,14 @@ from openems_client.openems import (
             id="degree_celsius",
         ),
         pytest.param(
+            "°dC",
+            "temperature_sensor1",
+            UnitInfo(
+                unit="°C", quantity=Quantity.TEMPERATURE, cumulative=False, divisor=10
+            ),
+            id="decidegree_celsius",
+        ),
+        pytest.param(
             "%",
             "soc",
             UnitInfo(unit="%", quantity=Quantity.STATE_OF_CHARGE, cumulative=False),
@@ -364,3 +372,57 @@ async def test_derived_channels_are_created() -> None:
     cells.handle_data_update("battery0/Tower0Module0Cell0Voltage", 3300)
     cells.handle_data_update("battery0/Tower0Module0Cell1Voltage", 3320)
     assert cells.value == 20
+
+
+async def test_decidegree_values_are_scaled() -> None:
+    """Values in decidegree Celsius are provided in degree Celsius."""
+    edge = _make_edge(
+        {
+            "battery0": {
+                "properties": {},
+                "channels": [
+                    _channel("Tower0Module0TemperatureSensor1", "INTEGER", "°dC")
+                ],
+            }
+        }
+    )
+    sensor = edge.components["battery0"].channels_of(ChannelKind.SENSOR)[0]
+    assert (sensor.unit, sensor.quantity) == ("°C", Quantity.TEMPERATURE)
+
+    sensor.handle_data_update("battery0/Tower0Module0TemperatureSensor1", 231)
+    assert sensor.value == 23.1
+
+    sensor.handle_data_update("battery0/Tower0Module0TemperatureSensor1", None)
+    assert sensor.value is None
+
+
+async def test_text_and_float_values() -> None:
+    """Text channels are text sensors, floats are numeric values."""
+    edge = _make_edge(
+        {
+            "_host": {
+                "Hostname": "fems1",
+                "properties": {},
+                "channels": [
+                    _channel("OsVersion", "STRING"),
+                    _channel("CpuTemperature", "FLOAT", "°C"),
+                ],
+            }
+        }
+    )
+    host = edge.components["_host"]
+    os_version = host.channels_of(ChannelKind.TEXT_SENSOR)[0]
+    cpu_temperature = host.channels_of(ChannelKind.SENSOR)[0]
+    assert os_version.name == "OsVersion"
+    assert os_version.unit is None
+
+    os_version.handle_data_update("_host/OsVersion", "Debian 13")
+    cpu_temperature.handle_data_update("_host/CpuTemperature", 48.5)
+    assert os_version.value == "Debian 13"
+    assert cpu_temperature.value == 48.5
+
+    # values of the wrong type are no values
+    os_version.handle_data_update("_host/OsVersion", 13)
+    cpu_temperature.handle_data_update("_host/CpuTemperature", "hot")
+    assert os_version.value is None
+    assert cpu_temperature.value is None

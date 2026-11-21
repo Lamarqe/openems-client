@@ -16,6 +16,8 @@ class ChannelKind(StrEnum):
 
     SENSOR = "sensor"
     ENUM_SENSOR = "enum_sensor"
+    # read-only text, eg serial numbers and versions
+    TEXT_SENSOR = "text_sensor"
     BINARY_SENSOR = "binary_sensor"
     NUMBER = "number"
     SELECT = "select"
@@ -56,6 +58,8 @@ class UnitInfo:
     quantity: Quantity | None
     # the value is a counter, which only increases
     cumulative: bool
+    # backend values are divided by it to match the normalised unit
+    divisor: int = 1
 
 
 # reference: openems/io.openems.common/src/io/openems/common/channel/Unit.java
@@ -86,7 +90,11 @@ _UNITS: dict[str, tuple[str, Quantity, bool]] = {
     "VA": ("VA", Quantity.APPARENT_POWER, False),
     "C": ("°C", Quantity.TEMPERATURE, False),
     "°C": ("°C", Quantity.TEMPERATURE, False),
+    "°dC": ("°C", Quantity.TEMPERATURE, False),
 }
+
+# units whose values are scaled to the normalised unit, eg decidegree Celsius
+_DIVISORS: dict[str, int] = {"°dC": 10}
 
 
 def unit_info(unit: str | None, key: str) -> UnitInfo:
@@ -99,7 +107,12 @@ def unit_info(unit: str | None, key: str) -> UnitInfo:
     # percentages are a state of charge only for SoC channels, eg efficiencies are not
     if quantity is Quantity.PERCENTAGE and (key == "soc" or key.endswith("_soc")):
         quantity = Quantity.STATE_OF_CHARGE
-    return UnitInfo(unit=normalised, quantity=quantity, cumulative=cumulative)
+    return UnitInfo(
+        unit=normalised,
+        quantity=quantity,
+        cumulative=cumulative,
+        divisor=_DIVISORS.get(unit, 1),
+    )
 
 
 def channel_key(name: str) -> str:

@@ -680,7 +680,7 @@ wheels = [
 
 [[package]]
 name = "openems-client"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -700,7 +700,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.9" },
+    { name = "aiohttp", specifier = ">=3.14" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "jsonrpc-websocket", specifier = ">=4.1.0" },
     { name = "yarl", specifier = ">=1.9" },

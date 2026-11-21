@@ -41,6 +41,8 @@ class RestDetails(NamedTuple):
 
 CONFIG: OpenEMSConfig = OpenEMSConfig()
 
+META_VERSION_CHANNEL = "_meta/Version"
+
 # value of a channel as received from the backend
 type BackendValue = str | int | float | None
 # value of a channel as provided by the channel objects
@@ -64,6 +66,7 @@ class OpenEMSDataHandler:
         self.unit: str | None = info.unit
         self.quantity: Quantity | None = info.quantity
         self.cumulative: bool = info.cumulative
+        self._divisor: int = info.divisor
         # one of the main channels of the component, see config/primary_channels.json
         self.primary: bool = CONFIG.is_primary_channel(component.name, name)
         self.severity: Severity | None = None
@@ -158,6 +161,8 @@ class OpenEMSChannel(OpenEMSDataHandler):
             return ChannelKind.BINARY_SENSOR
         if self.options is not None:
             return ChannelKind.ENUM_SENSOR
+        if channel_json["type"] == "STRING":
+            return ChannelKind.TEXT_SENSOR
         return ChannelKind.SENSOR
 
     def handle_current_value(self, value: Any) -> None:
@@ -168,20 +173,27 @@ class OpenEMSChannel(OpenEMSDataHandler):
 
     def handle_data_update(self, channel_name: str, value: BackendValue) -> None:
         """Handle a data update from the backend."""
-        if value is not None and isinstance(value, int):
-            if self.kind is ChannelKind.ENUM_SENSOR:
+        match self.kind:
+            case ChannelKind.ENUM_SENSOR if isinstance(value, int):
                 self.handle_current_value(self._option_keys_by_value.get(value))
-            elif self.kind is ChannelKind.BINARY_SENSOR:
+            case ChannelKind.BINARY_SENSOR if isinstance(value, int):
                 self.handle_current_value(bool(value))
-            else:
+            case ChannelKind.TEXT_SENSOR if isinstance(value, str):
                 self.handle_current_value(value)
-        else:
-            self.handle_current_value(None)
+            case ChannelKind.SENSOR if isinstance(value, int | float):
+                self.handle_current_value(
+                    value / self._divisor if self._divisor != 1 else value
+                )
+            case _:
+                self.handle_current_value(None)
 
     @property
     def value(self) -> ChannelValue:
-        """Return the value: a number, the option key of enums, a bool of binary sensors."""
-        if isinstance(self._current_value, (str, int)):
+        """Return the value: a number, the option key of enums, a bool of binary sensors.
+
+        Text sensors provide the text.
+        """
+        if isinstance(self._current_value, (str, int, float)):
             return self._current_value
 
         return None
@@ -260,10 +272,14 @@ class OpenEMSChannel(OpenEMSDataHandler):
     async def _rest_post(self, url: URL, data: dict[str, Any]) -> None:
         """Post a channel value to the REST API, raise OpenEMSError on failure."""
         connection = self.component.edge.backend.connection
-        auth = aiohttp.BasicAuth(connection.username, connection.password)
+        headers = {
+            "Authorization": aiohttp.encode_basic_auth(
+                connection.username, connection.password, encoding="latin1"
+            )
+        }
 
         async def _post(session: aiohttp.ClientSession) -> None:
-            async with session.post(url, json=data, auth=auth) as resp:
+            async with session.post(url, json=data, headers=headers) as resp:
                 if resp.status != 200:
                     raise OpenEMSError(
                         f"REST write of channel {self.component.name}/{self.name} "
@@ -946,6 +962,32 @@ class OpenEMSComponent:
         ]
 
 
+class _OpenEMSEdgeVersion(OpenEMSDataHandler):
+    """Software version of the edge, from the channel _meta/Version."""
+
+    kind = ChannelKind.SENSOR
+
+    def __init__(self, meta_component: OpenEMSComponent) -> None:
+        super().__init__(meta_component, "Version")
+
+    def handle_data_update(self, channel_name: str, value: BackendValue) -> None:
+        # the last known version stays valid while the edge is not connected
+        if isinstance(value, str) and value and value != self._current_value:
+            self._current_value = value
+            self._notify_listeners()
+
+    @property
+    def value(self) -> str | None:
+        version: str | None = self._current_value
+        return version
+
+    def _subscribe(self) -> None:
+        self.component.edge.register_channel({META_VERSION_CHANNEL}, self)
+
+    def _unsubscribe(self) -> None:
+        self.component.edge.unregister_channel(self)
+
+
 class OpenEMSEdge:
     """Class representing an OpenEMS Edge device."""
 
@@ -1046,6 +1088,11 @@ class OpenEMSEdge:
             component_config
         )
         self.rest: RestDetails | None = self._prepare_rest(component_config)
+        self._version: _OpenEMSEdgeVersion | None = (
+            _OpenEMSEdgeVersion(self.components["_meta"])
+            if "_meta" in self.components
+            else None
+        )
 
     def _prepare_entities(
         self, component_config: dict[str, dict[str, Any]]
@@ -1185,6 +1232,24 @@ class OpenEMSEdge:
                 handlers.remove(handler)
                 if not handlers:
                     del self._registered_handlers[channel_name]
+
+    @property
+    def version(self) -> str | None:
+        """Return the software version of the edge, None until it is known.
+
+        The version is only read while a version listener is registered.
+        """
+        return self._version.value if self._version else None
+
+    def add_version_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Add a listener called when the version changes, return a function to remove it.
+
+        The listener is also called on availability changes of the edge. The
+        version channel is subscribed at the edge while it has listeners.
+        """
+        if self._version is None:
+            return lambda: None
+        return self._version.add_listener(listener)
 
     @property
     def id(self) -> str:

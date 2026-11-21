@@ -111,10 +111,18 @@ the channels become unavailable and the library reconnects in the background.
 They are available again with the first channel data after the reconnect.
 Listeners of the channels are called on every change of the availability.
 
+### Edge version
+
+`edge.version` is the software version of the edge (channel `_meta/Version`),
+`None` until it is known. The channel is only subscribed while a listener is
+registered with `edge.add_version_listener(cb)`, which returns a function to
+remove it. The last known version stays valid while the edge is disconnected,
+and listeners are called when it changes, e.g. after a system update.
+
 ### Channels
 
 Each component sorts its channels by `kind` (`openems_client.model.ChannelKind`):
-read-only values are `SENSOR`, `ENUM_SENSOR` or `BINARY_SENSOR`, writable
+read-only values are `SENSOR` (numbers), `ENUM_SENSOR`, `BINARY_SENSOR` or `TEXT_SENSOR` (text, e.g. serial numbers and versions), writable
 properties are `NUMBER`, `SELECT`, `SWITCH` or `TIME`. Channels without a known
 representation, eg string properties without options, are skipped.
 
@@ -135,7 +143,7 @@ Every channel provides:
 | --- | --- |
 | `unique_id` | `<hostname>/<edge id>/<component>/<channel>` |
 | `key` | snake_case channel name without the `_Property` prefix, eg `charge_mode` |
-| `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C`; `None` without unit |
+| `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C` and `°dC` (values divided by 10); `None` without unit |
 | `quantity` | `openems_client.model.Quantity`, eg `ENERGY`, `STATE_OF_CHARGE` |
 | `cumulative` | the value is a counter which only increases (`_Σ` units) |
 | `primary` | one of the main channels of the component (`config/primary_channels.json`) |

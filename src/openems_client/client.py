@@ -56,6 +56,7 @@ class OpenEMSClient:
         self.connection = OpenEMSWebSocketConnection(conn_props, session)
         self._login: LoginInfo | None = None
         self._backend_created = False
+        self._closed = False
 
     @property
     def host(self) -> str | None:
@@ -76,6 +77,7 @@ class OpenEMSClient:
         the system cannot be reached and OpenEMSError for other failures. The
         connection is closed on failure.
         """
+        self._closed = False
         try:
             await self.connection.connect_to_server()
             response = await self.connection.login_to_server()
@@ -149,8 +151,9 @@ class OpenEMSClient:
         return backend
 
     async def close(self) -> None:
-        """Close the connection, unless it was handed over to a backend."""
-        if not self._backend_created:
+        """Close the connection, unless it is closed or was handed over to a backend."""
+        if not self._backend_created and not self._closed:
+            self._closed = True
             await self.connection.stop()
 
     async def __aenter__(self) -> Self:

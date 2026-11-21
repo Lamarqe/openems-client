@@ -609,4 +609,4 @@ async def test_write_via_rest_posts_value_with_injected_session() -> None:
     kwargs = backend.connection.session.post.call_args.kwargs
     assert str(url) == "http://localhost:8084/rest/channel/meter0/ActivePower"
     assert kwargs["json"] == {"value": 1500}
-    assert kwargs["auth"].login == "user"
+    assert kwargs["headers"] == {"Authorization": "Basic dXNlcjpwYXNz"}
