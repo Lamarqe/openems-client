@@ -23,13 +23,12 @@ Requires Python 3.14 or newer.
 ```python
 import asyncio
 
+from openems_client.client import OpenEMSClient
 from openems_client.const import CONN_TYPE_DIRECT_EDGE
-from openems_client.connection import OpenEMSConfigReader, OpenEMSWebSocketConnection
-from openems_client.openems import OpenEMSBackend
 
 
 async def main() -> None:
-    connection = OpenEMSWebSocketConnection(
+    client = OpenEMSClient(
         {
             "type": CONN_TYPE_DIRECT_EDGE,
             "host": "192.168.1.10",
@@ -38,17 +37,13 @@ async def main() -> None:
             "password": "user",
         }
     )
-    await connection.connect_to_server()
-    login_response = await connection.login_to_server()
+    login = await client.connect()  # closes the connection on failure
+    edge_id = (await client.read_edges())[0].id
+    hostname = await client.read_edge_hostname(edge_id)  # identifies the edge
+    components = await client.read_edge_config(edge_id)  # cache this
 
-    reader = OpenEMSConfigReader(connection)
-    edges = await reader.read_edges()
-    edge_id = edges["edges"][0]["id"]
-    reader.set_edge_id(edge_id)
-    components = await reader.read_edge_components()
-
-    multi_edge = OpenEMSConfigReader.parse_login_response(login_response)
-    backend = OpenEMSBackend(connection, edge_id, multi_edge, components)
+    # the backend takes over the connection
+    backend = client.create_backend(edge_id, components)
     # start() starts the background tasks, stop() closes the connection and ends them
     backend.start()
     ...
@@ -58,10 +53,26 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+For short requests, e.g. to validate credentials, use the client as a context
+manager, which closes the connection:
+
+```python
+async with OpenEMSClient(conn_props, session) as client:
+    login = await client.connect()
+    edges = await client.read_edges()
+```
+
+`login.multi_edge` is `True` for backends that manage several edges, such as the
+FENECON portal. `read_edges()` returns `EdgeInfo` objects with `id`, `online`,
+`comment` and `version`.
+
 An existing `aiohttp.ClientSession` can be passed with
-`OpenEMSWebSocketConnection(conn_props, session=session)`. It is used for all
-websocket and REST requests and is not closed by the library. Without it, the
-connection creates its own session and closes it in `stop()`.
+`OpenEMSClient(conn_props, session)`. It is used for all websocket and REST
+requests and is not closed by the library. Without it, the connection creates
+its own session and closes it in `stop()`.
+
+The lower level classes `OpenEMSWebSocketConnection`, `OpenEMSConfigReader` and
+`OpenEMSBackend` remain available.
 
 ### Checking a cached configuration
 
@@ -70,7 +81,7 @@ consumers usually cache the result of `read_edge_components()`. To find out
 whether the cached configuration is still current, read it again and compare:
 
 ```python
-components, change = await reader.check_edge_components(cached)
+components, change = await client.check_edge_config(edge_id, cached)
 if change:  # components added, removed or changed (factoryId or channels)
     print(change.added, change.removed, change.changed)
 ```
