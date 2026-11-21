@@ -425,7 +425,7 @@ def test_derived_channel_unique_id_contains_component_and_channel() -> None:
     comp = _make_component_with_edge()
     sensor = _make_derived(comp, VOLTAGE_DIFFERENCE)
 
-    uid = sensor.unique_id()
+    uid = sensor.unique_id
     assert "testhost" in uid
     assert "battery0" in uid
     assert "VoltageDifference" in uid

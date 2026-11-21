@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import time
 import logging
 import math
-from typing import Any, NamedTuple
+import re
+from typing import Any, NamedTuple, cast, overload
 
 import aiohttp
 from jinja2 import Template
@@ -25,6 +26,7 @@ from .helpers_openems import (
     expand_derived_definition,
     prepare_ref_value,
 )
+from .model import ChannelKind, Quantity, Severity, channel_key, severity, unit_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,10 +49,25 @@ type ChannelValue = str | int | float | bool | time | None
 class OpenEMSDataHandler:
     """Interface for handling data updates from the backend."""
 
-    def __init__(self, component: OpenEMSComponent, name: str) -> None:
+    kind: ChannelKind
+
+    def __init__(
+        self, component: OpenEMSComponent, name: str, unit: str | None = None
+    ) -> None:
         """Initialize the handler."""
         self.component: OpenEMSComponent = component
         self.name: str = name
+        # stable snake_case id of the channel, shared by all components
+        self.key: str = channel_key(name)
+        info = unit_info(unit, self.key)
+        self.unit: str | None = info.unit
+        self.quantity: Quantity | None = info.quantity
+        self.cumulative: bool = info.cumulative
+        # one of the main channels of the component, see config/primary_channels.json
+        self.primary: bool = CONFIG.is_primary_channel(component.name, name)
+        self.severity: Severity | None = None
+        # snake_case keys of the possible values of enum channels
+        self.option_keys: list[str] | None = None
         self._listeners: list[Callable[[], None]] = []
         self._current_value: Any = None
 
@@ -90,8 +107,9 @@ class OpenEMSDataHandler:
         for listener in list(self._listeners):
             listener()
 
+    @property
     def unique_id(self) -> str:
-        """Generate unique ID for the channel."""
+        """Return the unique ID of the channel."""
         return (
             self.component.edge.hostname
             + "/"
@@ -104,9 +122,8 @@ class OpenEMSDataHandler:
 
 
 class OpenEMSChannel(OpenEMSDataHandler):
-    """Class representing a sensor of an OpenEMS component."""
+    """Class representing a read-only channel of an OpenEMS component."""
 
-    # Use with platform sensor
     def __init__(
         self,
         component: OpenEMSComponent,
@@ -114,19 +131,28 @@ class OpenEMSChannel(OpenEMSDataHandler):
         options: dict[str, int] | None = None,
     ) -> None:
         """Initialize the channel."""
-        super().__init__(component, channel_json["id"])
-        unit = channel_json["unit"]
+        super().__init__(component, channel_json["id"], channel_json["unit"])
+        # backend value -> option name
         self.options: dict[int, str] | None = None
-        if (
-            "category" in channel_json
-            and channel_json["category"] == "ENUM"
-            and options is not None
-        ):
+        self._option_keys_by_value: dict[int, str] = {}
+        if channel_json.get("category") == "ENUM" and options is not None:
             self.options = {v: k for k, v in options.items()}
-
-        self.unit: str = unit
+            self._option_keys_by_value = {
+                v: to_snake_case(k) for k, v in options.items()
+            }
+            self.option_keys = list(dict.fromkeys(self._option_keys_by_value.values()))
+        self.kind = self._channel_kind(channel_json)
+        if self.kind is ChannelKind.BINARY_SENSOR:
+            self.severity = severity(channel_json.get("level"))
         self.orig_json: dict[str, Any] = channel_json
         self._rest_update_task: asyncio.Task[None] | None = None
+
+    def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
+        if channel_json["type"] == "BOOLEAN":
+            return ChannelKind.BINARY_SENSOR
+        if self.options is not None:
+            return ChannelKind.ENUM_SENSOR
+        return ChannelKind.SENSOR
 
     def handle_current_value(self, value: Any) -> None:
         """Handle a new entity value and notify Home Assistant."""
@@ -137,8 +163,10 @@ class OpenEMSChannel(OpenEMSDataHandler):
     def handle_data_update(self, channel_name: str, value: BackendValue) -> None:
         """Handle a data update from the backend."""
         if value is not None and isinstance(value, int):
-            if self.options is not None:
-                self.handle_current_value(self.options.get(value))
+            if self.kind is ChannelKind.ENUM_SENSOR:
+                self.handle_current_value(self._option_keys_by_value.get(value))
+            elif self.kind is ChannelKind.BINARY_SENSOR:
+                self.handle_current_value(bool(value))
             else:
                 self.handle_current_value(value)
         else:
@@ -146,8 +174,16 @@ class OpenEMSChannel(OpenEMSDataHandler):
 
     @property
     def value(self) -> ChannelValue:
-        """Return the value of the sensor."""
+        """Return the value: a number, the option key of enums, a bool of binary sensors."""
         if isinstance(self._current_value, (str, int)):
+            return self._current_value
+
+        return None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the state of a binary sensor."""
+        if isinstance(self._current_value, bool):
             return self._current_value
 
         return None
@@ -256,9 +292,8 @@ class OpenEMSChannel(OpenEMSDataHandler):
 
 
 type DerivedSourceValue = str | float | None
-type DerivedValueFn = Callable[
-    [Mapping[str, DerivedSourceValue | list[DerivedSourceValue]]], float | None
-]
+type DerivedSourceValues = Mapping[str, DerivedSourceValue | list[DerivedSourceValue]]
+type DerivedValueFn = Callable[[DerivedSourceValues], float | None]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -281,6 +316,8 @@ class DerivedChannelDefinition:
 class OpenEMSDerivedChannel(OpenEMSDataHandler):
     """Class representing a derived sensor of an OpenEMS component."""
 
+    kind = ChannelKind.SENSOR
+
     def __init__(
         self,
         component: OpenEMSComponent,
@@ -290,8 +327,7 @@ class OpenEMSDerivedChannel(OpenEMSDataHandler):
         value_fn: DerivedValueFn,
     ) -> None:
         """Initialize the derived channel."""
-        super().__init__(component, name)
-        self.unit: str = unit
+        super().__init__(component, name, unit)
         self._sources = sources
         self._value_fn = value_fn
         channel_ids: list[str] = []
@@ -352,6 +388,44 @@ class OpenEMSDerivedChannel(OpenEMSDataHandler):
         return None
 
 
+def _difference(values: DerivedSourceValues) -> float:
+    return cast(float, values["max"]) - cast(float, values["min"])
+
+
+def _spread(values: DerivedSourceValues) -> float:
+    cells = cast(list[float], values["cells"])
+    return max(cells) - min(cells)
+
+
+# Channels calculated from other channels, key: component regexp
+DERIVED_CHANNELS: dict[str, tuple[DerivedChannelDefinition, ...]] = {
+    r"battery\d+": (
+        DerivedChannelDefinition(
+            id="VoltageDifference",
+            sources={"max": "MaxCellVoltage", "min": "MinCellVoltage"},
+            value_fn=_difference,
+            unit="mV",
+        ),
+        DerivedChannelDefinition(
+            id="Tower{tId}Module{mId}CellVoltageDifference",
+            sources={"cells": "Tower{tId}Module{mId}Cell{cId}Voltage"},
+            value_fn=_spread,
+            unit="mV",
+        ),
+    ),
+}
+
+
+def derived_channel_definitions(
+    component_name: str,
+) -> tuple[DerivedChannelDefinition, ...]:
+    """Return the derived channel definitions for the given component."""
+    for component_regexp, definitions in DERIVED_CHANNELS.items():
+        if re.fullmatch(component_regexp, component_name):
+            return definitions
+    return ()
+
+
 class OpenEMSProperty(OpenEMSChannel):
     """Class representing a property of an OpenEMS component."""
 
@@ -369,14 +443,13 @@ class OpenEMSProperty(OpenEMSChannel):
         return value
 
     async def update_value(self, new_value: Any) -> None:
-        """Handle value change request from Home Assistant."""
-        await self.component.update_properties({self: new_value})
+        """Write a new value to the edge, raise ValueError if it is invalid."""
+        await self.component.update_properties({self: self.to_backend_value(new_value)})
 
 
 class OpenEMSEnumProperty(OpenEMSProperty):
     """Class representing a enum property of an OpenEMS component."""
 
-    # Use with platform select
     def __init__(
         self,
         component: OpenEMSComponent,
@@ -385,7 +458,12 @@ class OpenEMSEnumProperty(OpenEMSProperty):
     ) -> None:
         """Initialize the channel."""
         super().__init__(component, channel_json)
+        # options as used by the backend
         self.property_options: list[str] = options
+        self.option_keys = list(dict.fromkeys(to_snake_case(o) for o in options))
+
+    def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
+        return ChannelKind.SELECT
 
     def to_backend_value(self, value: Any) -> str:
         """Convert the snake_case or original option to the original option."""
@@ -395,10 +473,10 @@ class OpenEMSEnumProperty(OpenEMSProperty):
         raise ValueError(f"Invalid option: {value}")
 
     @property
-    def current_option(self) -> str | None:
-        """Return the current option."""
+    def value(self) -> str | None:
+        """Return the key of the current option."""
         if isinstance(self._current_value, str):
-            return self._current_value
+            return to_snake_case(self._current_value)
 
         return None
 
@@ -424,7 +502,9 @@ class OpenEMSEnumProperty(OpenEMSProperty):
 class OpenEMSTimeProperty(OpenEMSProperty):
     """Class representing a time property of an OpenEMS component."""
 
-    # Use with platform time
+    def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
+        return ChannelKind.TIME
+
     def handle_data_update(self, channel_name: str, value: BackendValue) -> None:
         """Handle a data update from the backend."""
         if not isinstance(value, str):
@@ -460,7 +540,6 @@ class OpenEMSNumberProperty(OpenEMSProperty):
 
     STEPS = 200  # Minimum number of steps
 
-    # Use with platform Number
     def __init__(
         self,
         component: OpenEMSComponent,
@@ -480,6 +559,9 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         # fixed step size from the config, replaces the calculated step size
         self.fixed_step: float | None = None
         self.reference_channels: dict[str, str | float | None] = {}
+
+    def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
+        return ChannelKind.NUMBER
 
     @property
     def value(self) -> float | None:
@@ -589,10 +671,6 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         except (TypeError, ValueError) as err:
             raise ValueError(f"Invalid number: {value}") from err
 
-    async def update_value(self, new_value: float) -> None:
-        """Handle value change request from Home Assistant."""
-        await super().update_value(self.to_backend_value(new_value))
-
     def set_multiplier_def(self, multiplier_def: str) -> None:
         """Initialize the multiplier of the number channel."""
         self.multiplier_def, multiplier_references = prepare_ref_value(
@@ -645,7 +723,6 @@ class OpenEMSNumberProperty(OpenEMSProperty):
 class OpenEMSBooleanProperty(OpenEMSProperty):
     """Class representing a boolean property of an OpenEMS component."""
 
-    # Use with platform switch
     TRUE_VALUES = ("1", "true", "on", "yes", "enable")
     FALSE_VALUES = ("0", "false", "off", "no", "disable")
 
@@ -662,11 +739,8 @@ class OpenEMSBooleanProperty(OpenEMSProperty):
                 return False
         raise ValueError(f"Invalid boolean: {value}")
 
-    @property
-    def is_on(self) -> bool | None:
-        """Return true if switch is on."""
-        is_on: bool | None = self._current_value
-        return is_on
+    def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
+        return ChannelKind.SWITCH
 
     def handle_data_update(self, channel_name: str, value: BackendValue) -> None:
         """Handle a data update from the backend."""
@@ -685,31 +759,38 @@ class OpenEMSComponent:
         self.edge: OpenEMSEdge = edge
         self.name: str = name
         self.alias: str | None = json_def.get("_PropertyAlias")
+        # implementation of the component, eg "Evcs.Keba.KeContact"
+        self.factory_id: str | None = json_def.get("factoryId")
+        self.has_primary_channels: bool = CONFIG.has_primary_channels(name)
         self.ref_values: dict[str, Any] = {}
         self.json_properties: dict[str, Any] = json_def["properties"]
-        self.sensors: list[OpenEMSChannel] = []
-        self.boolean_sensors: list[OpenEMSChannel] = []
-        self.enum_properties: list[OpenEMSEnumProperty] = []
-        self.number_properties: list[OpenEMSNumberProperty] = []
-        self.boolean_properties: list[OpenEMSBooleanProperty] = []
-        self.time_properties: list[OpenEMSTimeProperty] = []
+        self._channels: list[OpenEMSDataHandler] = []
         self.channel_ids: list[str] = []
+
+    @property
+    def unique_id(self) -> str:
+        """Return the unique ID of the component.
+
+        The hostname may contain spaces itself (multi edge setups: "<hostname> <edge id>").
+        """
+        return self.edge.hostname + " " + self.name
 
     def init_channels(self, channels: list[dict[str, Any]]) -> None:
         """Parse and initialize the components channels."""
         self.channel_ids = [c["id"] for c in channels]
         for channel_json in channels:
-            options_backend: dict[str, int] | list[str] | None = channel_json.pop(
-                "options", None
+            options_backend: dict[str, int] | list[str] | None = channel_json.get(
+                "options"
             )
             if channel_json["id"].startswith("_Property"):
                 # scan type and convert to property
                 match channel_json["type"]:
                     case "BOOLEAN":
-                        boolean_prop = OpenEMSBooleanProperty(
-                            component=self, channel_json=channel_json
+                        self._channels.append(
+                            OpenEMSBooleanProperty(
+                                component=self, channel_json=channel_json
+                            )
                         )
-                        self.boolean_properties.append(boolean_prop)
                     case "STRING":
                         options = (
                             # options received from backend are preferred over configured options
@@ -723,12 +804,12 @@ class OpenEMSComponent:
                                 channel_json=channel_json,
                                 options=options,
                             )
-                            self.enum_properties.append(enum_prop)
+                            self._channels.append(enum_prop)
                         elif CONFIG.is_time_property(self.name, channel_json["id"]):
                             time_prop = OpenEMSTimeProperty(
                                 component=self, channel_json=channel_json
                             )
-                            self.time_properties.append(time_prop)
+                            self._channels.append(time_prop)
                     case "INTEGER":
                         if limit_def := CONFIG.get_number_limit(
                             self.name, channel_json["id"]
@@ -749,7 +830,7 @@ class OpenEMSComponent:
                                 ) is not None:
                                     number_prop.set_step(step)
                                 number_prop.set_limit_def(limit_def)
-                                self.number_properties.append(number_prop)
+                                self._channels.append(number_prop)
                             except (
                                 TypeError,
                                 jsonrpc_base.jsonrpc.TransportError,
@@ -767,14 +848,16 @@ class OpenEMSComponent:
                 channel_options = (
                     options_backend if isinstance(options_backend, dict) else None
                 )
-                channel = OpenEMSChannel(
-                    component=self, channel_json=channel_json, options=channel_options
+                self._channels.append(
+                    OpenEMSChannel(
+                        component=self,
+                        channel_json=channel_json,
+                        options=channel_options,
+                    )
                 )
-                match channel_json["type"]:
-                    case "BOOLEAN":
-                        self.boolean_sensors.append(channel)
-                    case _:
-                        self.sensors.append(channel)
+        self._channels.extend(
+            self.create_derived_channels(derived_channel_definitions(self.name))
+        )
 
     def create_derived_channels(
         self, definitions: Iterable[DerivedChannelDefinition]
@@ -839,21 +922,36 @@ class OpenEMSComponent:
 
     @property
     def channels(self) -> list[OpenEMSDataHandler]:
-        """Return all channels of the component (all platforms)."""
+        """Return all channels of the component, including derived channels."""
+        return list(self._channels)
+
+    @overload
+    def channels_of(self, kind: ChannelKind) -> list[OpenEMSDataHandler]: ...
+
+    @overload
+    def channels_of[T: OpenEMSDataHandler](
+        self, kind: ChannelKind, channel_type: type[T]
+    ) -> list[T]: ...
+
+    def channels_of(
+        self,
+        kind: ChannelKind,
+        channel_type: type[OpenEMSDataHandler] = OpenEMSDataHandler,
+    ) -> list[Any]:
+        """Return the channels of the given kind, optionally narrowed to a channel class."""
         return [
-            *self.properties,
-            *self.sensors,
-            *self.boolean_sensors,
+            channel
+            for channel in self._channels
+            if channel.kind is kind and isinstance(channel, channel_type)
         ]
 
     @property
     def properties(self) -> list[OpenEMSProperty]:
-        """Return all properties of the component (all platforms)."""
+        """Return all writable channels of the component."""
         return [
-            *self.enum_properties,
-            *self.number_properties,
-            *self.boolean_properties,
-            *self.time_properties,
+            channel
+            for channel in self._channels
+            if isinstance(channel, OpenEMSProperty)
         ]
 
 

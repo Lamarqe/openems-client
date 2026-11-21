@@ -71,11 +71,53 @@ Requests to the backend raise the exceptions of `openems_client.exceptions`:
 - `OpenEMSAuthError`: the backend rejects the login.
 - `OpenEMSError`: the base class of both, also raised when the backend rejects a request.
 
+### Channels
+
+Each component sorts its channels by `kind` (`openems_client.model.ChannelKind`):
+read-only values are `SENSOR`, `ENUM_SENSOR` or `BINARY_SENSOR`, writable
+properties are `NUMBER`, `SELECT`, `SWITCH` or `TIME`. Channels without a known
+representation, eg string properties without options, are skipped.
+
+```python
+from openems_client.model import ChannelKind
+from openems_client.openems import OpenEMSNumberProperty
+
+component = backend.the_edge.components["ctrlEvcs0"]
+for channel in component.channels_of(ChannelKind.SENSOR):
+    print(channel.key, channel.unit, channel.quantity, channel.cumulative)
+for number in component.channels_of(ChannelKind.NUMBER, OpenEMSNumberProperty):
+    print(number.key, number.lower_limit, number.upper_limit, number.step)
+```
+
+Every channel provides:
+
+| Attribute | Meaning |
+| --- | --- |
+| `unique_id` | `<hostname>/<edge id>/<component>/<channel>` |
+| `key` | snake_case channel name without the `_Property` prefix, eg `charge_mode` |
+| `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C`; `None` without unit |
+| `quantity` | `openems_client.model.Quantity`, eg `ENERGY`, `STATE_OF_CHARGE` |
+| `cumulative` | the value is a counter which only increases (`_Σ` units) |
+| `primary` | one of the main channels of the component (`config/primary_channels.json`) |
+| `severity` | level of state channels which signal a problem |
+| `option_keys` | snake_case keys of the options of `ENUM_SENSOR` and `SELECT` channels |
+| `value` | current value; the option key for enums, a `bool` for binary sensors and switches |
+| `add_listener(cb)` | call `cb` on value changes, subscribes the channel at the edge |
+
+Writable channels accept new values with `await channel.update_value(value)`,
+`SELECT` channels take an option key.
+
+Components provide `unique_id` (`"<hostname> <component>"`), `alias`,
+`factory_id` and `has_primary_channels`.
+
 ### Derived channels
 
-Values that OpenEMS does not provide directly can be calculated from other
-channels of a component. Placeholders in `id` create one channel per match;
-placeholders that only occur in a source turn it into a list of values.
+Values that OpenEMS does not provide directly are calculated from other
+channels of a component, eg the cell voltage differences of batteries. They are
+`SENSOR` channels of the component (definitions in `openems.DERIVED_CHANNELS`).
+Placeholders in `id` create one channel per match; placeholders that only occur
+in a source turn it into a list of values. Further definitions can be applied
+with `component.create_derived_channels(...)`:
 
 ```python
 from openems_client.openems import DerivedChannelDefinition

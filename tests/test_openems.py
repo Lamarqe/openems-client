@@ -16,6 +16,7 @@ from openems_client.const import SLASH_ESC
 from openems_client.exceptions import OpenEMSConnectionError, OpenEMSError
 from openems_client.helpers import wrap_jsonrpc
 from openems_client.helpers_openems import prepare_ref_value
+from openems_client.model import ChannelKind
 
 
 def _make_backend():
@@ -101,10 +102,10 @@ async def test_component_boolean_property() -> None:
         assert "comp1" in edge.components
         comp = edge.components["comp1"]
         assert any(
-            p.name == "_PropertyEnabledCharging" for p in comp.boolean_properties
+            p.name == "_PropertyEnabledCharging" for p in comp.channels_of(ChannelKind.SWITCH)
         )
 
-        prop = comp.boolean_properties[0]
+        prop = comp.channels_of(ChannelKind.SWITCH)[0]
         called = False
 
         def cb():
@@ -115,7 +116,7 @@ async def test_component_boolean_property() -> None:
         edge.currentData({"comp1/_PropertyEnabledCharging": 1})
         assert prop.current_value is True
         assert called
-        assert "/_PropertyEnabledCharging" in prop.unique_id()
+        assert "/_PropertyEnabledCharging" in prop.unique_id
     finally:
         await edge.stop()
 
@@ -129,10 +130,10 @@ def test_enum_property_behavior() -> None:
         component=comp, channel_json=enum_json, options=options
     )
     prop.handle_data_update("_PropertyChargeMode", "EXCESS_POWER")
-    assert prop.current_option == "EXCESS_POWER"
+    assert prop.value == "excess_power"
     # unknown option is ignored
     prop.handle_data_update("_PropertyChargeMode", "UNKNOWN")
-    assert prop.current_option is None
+    assert prop.value is None
 
 
 def test_time_property_behavior() -> None:
@@ -269,9 +270,9 @@ async def test_entity_lifecycle_and_unique_id(dummy_backend) -> None:
     edge = openems.OpenEMSEdge(dummy_backend, "edge1", component_config)
     try:
         comp_obj = edge.components["c1"]
-        assert len(comp_obj.sensors) >= 1
-        for s in comp_obj.sensors:
-            assert s.unique_id().startswith("edge1")
+        assert len(comp_obj.channels_of(ChannelKind.SENSOR)) >= 1
+        for s in comp_obj.channels_of(ChannelKind.SENSOR):
+            assert s.unique_id.startswith("edge1")
     finally:
         await edge.stop()
 
@@ -312,7 +313,7 @@ async def test_register_channel_skips_channels_without_read_access(
     caplog.set_level("INFO")
 
     try:
-        for channel in edge.components["comp1"].sensors:
+        for channel in edge.components["comp1"].channels_of(ChannelKind.SENSOR):
             edge.register_channel({f"comp1/{channel.name}"}, channel)
 
         assert set(edge.registered_channels) == {
@@ -470,7 +471,7 @@ async def test_heat_pump_sg_ready_properties() -> None:
     try:
         comp = edge.components["ctrlIoHeatPump0"]
         comp.update_config = AsyncMock()
-        selects = {p.name: p for p in comp.enum_properties}
+        selects = {p.name: p for p in comp.channels_of(ChannelKind.SELECT, openems.OpenEMSEnumProperty)}
         assert selects["_PropertyMode"].property_options == ["MANUAL", "AUTOMATIC"]
         assert selects["_PropertyManualState"].property_options == [
             "LOCK",
@@ -478,7 +479,7 @@ async def test_heat_pump_sg_ready_properties() -> None:
             "RECOMMENDATION",
             "FORCE_ON",
         ]
-        numbers = {p.name: p for p in comp.number_properties}
+        numbers = {p.name: p for p in comp.channels_of(ChannelKind.NUMBER, openems.OpenEMSNumberProperty)}
         for name in ("_PropertyAutomaticForceOnSoc", "_PropertyAutomaticLockSoc"):
             assert (numbers[name].lower_limit, numbers[name].upper_limit) == (0, 100)
             assert numbers[name].step == 1
@@ -600,7 +601,7 @@ async def test_write_via_rest_posts_value_with_injected_session() -> None:
         },
     }
     edge = openems.OpenEMSEdge(backend, "edge-1", component_config)
-    channel = edge.components["meter0"].sensors[0]
+    channel = edge.components["meter0"].channels_of(ChannelKind.SENSOR, openems.OpenEMSChannel)[0]
 
     await channel.write_via_rest(1500, update_cycle=0, timeout=0)
 

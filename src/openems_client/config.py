@@ -24,6 +24,8 @@ class OpenEMSConfig:
             encoding=ENCODING
         ) as groups_file:
             self.update_groups: list[dict[str, Any]] = json.load(groups_file)
+        with (path / "primary_channels.json").open(encoding=ENCODING) as primary_file:
+            self.primary_channels: list[dict[str, Any]] = json.load(primary_file)
 
     def _get_config_property(
         self,
@@ -82,6 +84,21 @@ class OpenEMSConfig:
             self.number_properties, "step", component_name, channel_name
         )
         return step
+
+    def is_primary_channel(self, component_name: str, channel_name: str) -> bool:
+        """Return True if the channel is one of the main channels of its component."""
+        return any(
+            channel_name in entry["channels"]
+            for entry in self.primary_channels
+            if re.fullmatch(entry["component_regexp"], component_name)
+        )
+
+    def has_primary_channels(self, component_name: str) -> bool:
+        """Return True if the component has at least one primary channel."""
+        return any(
+            re.fullmatch(entry["component_regexp"], component_name)
+            for entry in self.primary_channels
+        )
 
     def update_group_members(
         self, comp_name: str, chan_name: str
