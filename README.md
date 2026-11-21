@@ -71,6 +71,18 @@ Requests to the backend raise the exceptions of `openems_client.exceptions`:
 - `OpenEMSAuthError`: the backend rejects the login.
 - `OpenEMSError`: the base class of both, also raised when the backend rejects a request.
 
+REST writes (`channel.write_via_rest`) raise these exceptions as well. With
+`update_cycle > 0` the call returns after the first write and repeats the
+write in the background; errors of the repeated writes are logged.
+
+### Availability
+
+`edge.available` and `channel.available` are `True` while the edge is
+connected and sends channel data. On a connection loss the values are cleared,
+the channels become unavailable and the library reconnects in the background.
+They are available again with the first channel data after the reconnect.
+Listeners of the channels are called on every change of the availability.
+
 ### Channels
 
 Each component sorts its channels by `kind` (`openems_client.model.ChannelKind`):
@@ -102,7 +114,8 @@ Every channel provides:
 | `severity` | level of state channels which signal a problem |
 | `option_keys` | snake_case keys of the options of `ENUM_SENSOR` and `SELECT` channels |
 | `value` | current value; the option key for enums, a `bool` for binary sensors and switches |
-| `add_listener(cb)` | call `cb` on value changes, subscribes the channel at the edge |
+| `available` | the edge is connected and sends channel data |
+| `add_listener(cb)` | call `cb` on value and availability changes, subscribes the channel at the edge |
 
 Writable channels accept new values with `await channel.update_value(value)`,
 `SELECT` channels take an option key.

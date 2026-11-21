@@ -18,7 +18,7 @@ from yarl import URL
 from .config import OpenEMSConfig
 from .connection import OpenEMSWebSocketConnection, backend_call
 from .const import CONN_TYPE_REST, CONN_TYPE_WEB_FENECON, CONN_TYPES, SLASH_ESC
-from .exceptions import OpenEMSConnectionError
+from .exceptions import OpenEMSConnectionError, OpenEMSError
 from .helpers import cancel_task, connection_url, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
@@ -86,6 +86,11 @@ class OpenEMSDataHandler:
     @property
     def value(self) -> ChannelValue:
         """Return the value of the channel."""
+
+    @property
+    def available(self) -> bool:
+        """Return True while the edge is connected and sends channel data."""
+        return self.component.edge.available
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Add a listener called on value changes, return a function to remove it.
@@ -208,87 +213,72 @@ class OpenEMSChannel(OpenEMSDataHandler):
     ) -> None:
         """Write a channel value via the REST API of the edge.
 
-        With update_cycle > 0 the value is written cyclically until timeout seconds
-        passed (0: no timeout) or another write of the channel starts.
+        With update_cycle > 0 the value is written again every update_cycle seconds
+        in the background, until timeout seconds passed (0: no timeout), the channel
+        is unsubscribed or another write of the channel starts. Errors of the first
+        write are raised, errors of the repeated writes are logged.
         """
         edge = self.component.edge
-        backend = edge.backend
         # Note: This is not a component property.
         # This means the value change request must be sent via REST.
         if not edge.rest or edge.rest.mode != "ReadWrite":
-            _LOGGER.error(
-                "Cannot update channel %s/%s: No REST write app found",
-                self.component.name,
-                self.name,
+            raise OpenEMSError(
+                f"Cannot write channel {self.component.name}/{self.name}: "
+                "no REST app with write access"
             )
-            return
 
-        # clean up a previously running cyclic update task
-        if self._rest_update_task is not None:
-            self._rest_update_task.cancel()
-            self._rest_update_task = None
+        await cancel_task(self._rest_update_task)
+        self._rest_update_task = None
 
-        # prepare REST URL and data
         url = edge.rest.url.joinpath("channel", self.component.name, self.name)
         data = {"value": new_value}
-
-        async def _rest_update_cyclic() -> None:
-            """Send REST update command cyclically."""
-            while True:
-                await _rest_update_oneshot()
-                await asyncio.sleep(update_cycle)
-
-        async def _rest_post(session: aiohttp.ClientSession) -> None:
-            auth = aiohttp.BasicAuth(
-                backend.connection.username, backend.connection.password
+        await self._rest_post(url, data)
+        if update_cycle > 0:
+            self._rest_update_task = asyncio.create_task(
+                self._rest_write_cyclic(url, data, update_cycle, timeout)
             )
-            async with session.post(url, json=data, auth=auth) as resp:
-                if resp.status != 200:
-                    _LOGGER.error(
-                        "Error during REST call to update channel %s/%s: HTTP %d: %s",
-                        self.component.name,
-                        self.name,
-                        resp.status,
-                        resp.reason,
-                    )
 
-        async def _rest_update_oneshot() -> None:
-            """Send REST update command."""
+    async def _rest_write_cyclic(
+        self, url: URL, data: dict[str, Any], update_cycle: int, timeout: int
+    ) -> None:
+        end = asyncio.get_running_loop().time() + timeout if timeout > 0 else None
+        while True:
+            await asyncio.sleep(update_cycle)
+            if end is not None and asyncio.get_running_loop().time() >= end:
+                return
             try:
-                if (session := backend.connection.session) is not None:
-                    await _rest_post(session)
-                else:
-                    async with aiohttp.ClientSession() as own_session:
-                        await _rest_post(own_session)
-            except aiohttp.ClientError as exc:
-                _LOGGER.error(
-                    "Cannot send REST update command via URL %s for channel %s/%s: %s",
-                    str(url),
+                await self._rest_post(url, data)
+            except OpenEMSError as err:
+                _LOGGER.warning(
+                    "Repeated REST write of channel %s/%s failed: %s",
                     self.component.name,
                     self.name,
-                    str(exc),
+                    err,
                 )
 
-        if update_cycle <= 0:
-            # one shot
-            await _rest_update_oneshot()
-        else:
-            # schedule cyclically
-            my_timeout = timeout if timeout > 0 else None
-            self._rest_update_task = asyncio.create_task(_rest_update_cyclic())
-            try:
-                await asyncio.wait_for(self._rest_update_task, timeout=my_timeout)
-            except TimeoutError:
-                self._rest_update_task = None
-            except asyncio.CancelledError:
-                # another update task took over. Dont touch the task reference.
-                pass
+    async def _rest_post(self, url: URL, data: dict[str, Any]) -> None:
+        """Post a channel value to the REST API, raise OpenEMSError on failure."""
+        connection = self.component.edge.backend.connection
+        auth = aiohttp.BasicAuth(connection.username, connection.password)
 
-        _LOGGER.info(
-            "Update value service task completed for channel %s/%s",
-            self.component.name,
-            self.name,
-        )
+        async def _post(session: aiohttp.ClientSession) -> None:
+            async with session.post(url, json=data, auth=auth) as resp:
+                if resp.status != 200:
+                    raise OpenEMSError(
+                        f"REST write of channel {self.component.name}/{self.name} "
+                        f"failed: HTTP {resp.status} {resp.reason}"
+                    )
+
+        try:
+            if connection.session is not None:
+                await _post(connection.session)
+            else:
+                async with aiohttp.ClientSession() as own_session:
+                    await _post(own_session)
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise OpenEMSConnectionError(
+                f"Cannot reach the REST API at {url.host}: {err}"
+            ) from err
 
 
 type DerivedSourceValue = str | float | None
@@ -1040,6 +1030,8 @@ class OpenEMSEdge:
         self._forward_interval: int = 0
         self._channel_data_forwarder: asyncio.Task[None] | None = None
         self._started: bool = False
+        # connected and receiving channel data, see set_unavailable and currentData
+        self._available: bool = False
         self.current_channel_data: dict[str, Any] = {}
         self._channel_subscription_updater = self.OpenEmsEdgeChannelSubscriptionUpdater(
             self
@@ -1089,13 +1081,30 @@ class OpenEMSEdge:
         # No REST App found
         return None
 
+    @property
+    def available(self) -> bool:
+        """Return True while the edge is connected and sends channel data."""
+        return self._available
+
+    def _set_available(self, available: bool) -> None:
+        if available == self._available:
+            return
+        self._available = available
+        for handler in {h for hs in self._registered_handlers.values() for h in hs}:
+            handler._notify_listeners()  # noqa: SLF001
+
     def set_unavailable(self) -> None:
-        """Set all active entities to unavailable and clear the subscription indicator."""
-        # Note: This method is called by the connection logic on connection loss.
+        """Clear all channel values and mark the edge as unavailable.
+
+        Called by the connection logic on connection loss. The edge is available
+        again with the first channel data after the reconnect.
+        """
         for channel_name in self.current_channel_data:
-            for handler in self._registered_handlers[channel_name]:
+            for handler in self._registered_handlers.get(channel_name, ()):
                 handler.handle_data_update(channel_name, None)
+        self.current_channel_data = {}
         self._channel_subscription_updater.clear()
+        self._set_available(False)
 
     def start(self) -> None:
         """Start the subscription updates and the channel data forwarder."""
@@ -1147,6 +1156,7 @@ class OpenEMSEdge:
         # forward data only when there is no forwarder, meaning no forward interval is set.
         if self._channel_data_forwarder is None:
             self._forward_current_channel_data(params)
+        self._set_available(True)
 
     def register_channel(
         self, channel_names: set[str], handler: OpenEMSDataHandler
