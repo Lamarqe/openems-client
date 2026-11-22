@@ -102,7 +102,8 @@ async def test_component_boolean_property() -> None:
         assert "comp1" in edge.components
         comp = edge.components["comp1"]
         assert any(
-            p.name == "_PropertyEnabledCharging" for p in comp.channels_of(ChannelKind.SWITCH)
+            p.name == "_PropertyEnabledCharging"
+            for p in comp.channels_of(ChannelKind.SWITCH)
         )
 
         prop = comp.channels_of(ChannelKind.SWITCH)[0]
@@ -313,7 +314,7 @@ async def test_register_channel_skips_channels_without_read_access(
     caplog.set_level("INFO")
 
     try:
-        for channel in edge.components["comp1"].channels_of(ChannelKind.SENSOR):
+        for channel in edge.components["comp1"].channels:
             edge.register_channel({f"comp1/{channel.name}"}, channel)
 
         assert set(edge.registered_channels) == {
@@ -471,7 +472,10 @@ async def test_heat_pump_sg_ready_properties() -> None:
     try:
         comp = edge.components["ctrlIoHeatPump0"]
         comp.update_config = AsyncMock()
-        selects = {p.name: p for p in comp.channels_of(ChannelKind.SELECT, openems.OpenEMSEnumProperty)}
+        selects = {
+            p.name: p
+            for p in comp.channels_of(ChannelKind.SELECT, openems.OpenEMSEnumProperty)
+        }
         assert selects["_PropertyMode"].property_options == ["MANUAL", "AUTOMATIC"]
         assert selects["_PropertyManualState"].property_options == [
             "LOCK",
@@ -479,7 +483,10 @@ async def test_heat_pump_sg_ready_properties() -> None:
             "RECOMMENDATION",
             "FORCE_ON",
         ]
-        numbers = {p.name: p for p in comp.channels_of(ChannelKind.NUMBER, openems.OpenEMSNumberProperty)}
+        numbers = {
+            p.name: p
+            for p in comp.channels_of(ChannelKind.NUMBER, openems.OpenEMSNumberProperty)
+        }
         for name in ("_PropertyAutomaticForceOnSoc", "_PropertyAutomaticLockSoc"):
             assert (numbers[name].lower_limit, numbers[name].upper_limit) == (0, 100)
             assert numbers[name].step == 1
@@ -597,16 +604,20 @@ async def test_write_via_rest_posts_value_with_injected_session() -> None:
         },
         "meter0": {
             "properties": {},
-            "channels": [make_channel_json("ActivePower", "INTEGER")],
+            "channels": [
+                make_channel_json("SetActivePowerEquals", "INTEGER", accessMode="WO")
+            ],
         },
     }
     edge = openems.OpenEMSEdge(backend, "edge-1", component_config)
-    channel = edge.components["meter0"].channels_of(ChannelKind.SENSOR, openems.OpenEMSChannel)[0]
+    channel = edge.components["meter0"].channels_of(
+        ChannelKind.WRITE_ONLY, openems.OpenEMSChannel
+    )[0]
 
-    await channel.write_via_rest(1500, update_cycle=0, timeout=0)
+    await channel.write_via_rest(1500)
 
     url = backend.connection.session.post.call_args.args[0]
     kwargs = backend.connection.session.post.call_args.kwargs
-    assert str(url) == "http://localhost:8084/rest/channel/meter0/ActivePower"
+    assert str(url) == "http://localhost:8084/rest/channel/meter0/SetActivePowerEquals"
     assert kwargs["json"] == {"value": 1500}
     assert kwargs["headers"] == {"Authorization": "Basic dXNlcjpwYXNz"}

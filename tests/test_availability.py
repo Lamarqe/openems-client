@@ -12,8 +12,8 @@ from openems_client.model import ChannelKind
 from openems_client.openems import OpenEMSChannel, OpenEMSEdge
 
 
-def _channel(id_: str, type_: str = "INTEGER") -> dict:
-    return {"id": id_, "type": type_, "unit": "W", "accessMode": "RO"}
+def _channel(id_: str, type_: str = "INTEGER", access_mode: str = "RO") -> dict:
+    return {"id": id_, "type": type_, "unit": "W", "accessMode": access_mode}
 
 
 def _make_edge(rest: bool = False) -> OpenEMSEdge:
@@ -26,7 +26,11 @@ def _make_edge(rest: bool = False) -> OpenEMSEdge:
         "_host": {"Hostname": "fems1"},
         "meter0": {
             "properties": {},
-            "channels": [_channel("ActivePower"), _channel("Frequency")],
+            "channels": [
+                _channel("ActivePower"),
+                _channel("Frequency"),
+                _channel("SetActivePowerEquals", access_mode="WO"),
+            ],
         },
     }
     if rest:
@@ -39,6 +43,12 @@ def _make_edge(rest: bool = False) -> OpenEMSEdge:
 
 def _sensors(edge: OpenEMSEdge) -> list[OpenEMSChannel]:
     return edge.components["meter0"].channels_of(ChannelKind.SENSOR, OpenEMSChannel)
+
+
+def _write_only(edge: OpenEMSEdge) -> OpenEMSChannel:
+    return edge.components["meter0"].channels_of(
+        ChannelKind.WRITE_ONLY, OpenEMSChannel
+    )[0]
 
 
 async def test_available_with_channel_data() -> None:
@@ -99,7 +109,7 @@ async def test_rest_write_without_rest_app_raises() -> None:
     """Writing via REST needs a REST app with write access."""
     edge = _make_edge()
     with pytest.raises(OpenEMSError, match="no REST app"):
-        await _sensors(edge)[0].write_via_rest(1, update_cycle=0, timeout=0)
+        await _write_only(edge).write_via_rest(1)
 
 
 async def test_rest_write_http_error_raises() -> None:
@@ -107,7 +117,7 @@ async def test_rest_write_http_error_raises() -> None:
     edge = _make_edge(rest=True)
     _mock_post(edge, status=401, reason="Unauthorized")
     with pytest.raises(OpenEMSError, match="HTTP 401"):
-        await _sensors(edge)[0].write_via_rest(1, update_cycle=0, timeout=0)
+        await _write_only(edge).write_via_rest(1)
 
 
 async def test_rest_write_connection_error_raises() -> None:
@@ -117,23 +127,31 @@ async def test_rest_write_connection_error_raises() -> None:
         side_effect=aiohttp.ClientConnectionError("refused")
     )
     with pytest.raises(OpenEMSConnectionError):
-        await _sensors(edge)[0].write_via_rest(1, update_cycle=0, timeout=0)
+        await _write_only(edge).write_via_rest(1)
 
 
 async def test_rest_write_cyclic_returns_and_repeats() -> None:
-    """A cyclic write returns after the first write and repeats in the background."""
+    """A cyclic write returns after the first write and repeats in the background.
+
+    A new write of the channel replaces it, stopping the edge ends it.
+    """
     edge = _make_edge(rest=True)
     post = _mock_post(edge, status=200)
-    channel = _sensors(edge)[0]
-    remove_listener = channel.add_listener(MagicMock())
+    channel = _write_only(edge)
 
-    await channel.write_via_rest(1, update_cycle=0.01, timeout=0)
+    await channel.write_via_rest(1, update_cycle=0.01)
     assert post.call_count == 1
     await asyncio.sleep(0.05)
     assert post.call_count > 2
 
-    # unsubscribing the channel ends the repeated writes
-    remove_listener()
+    await channel.write_via_rest(2)
+    calls = post.call_count
+    await asyncio.sleep(0.03)
+    assert post.call_count == calls
+    assert post.call_args.kwargs["json"] == {"value": 2}
+
+    await channel.write_via_rest(3, update_cycle=0.01)
+    await edge.stop()
     calls = post.call_count
     await asyncio.sleep(0.03)
     assert post.call_count == calls
@@ -143,7 +161,7 @@ async def test_rest_write_cyclic_ends_after_timeout() -> None:
     """Repeated writes end after the timeout, their errors are only logged."""
     edge = _make_edge(rest=True)
     post = _mock_post(edge, status=200)
-    channel = _sensors(edge)[0]
+    channel = _write_only(edge)
 
     await channel.write_via_rest(1, update_cycle=0.01, timeout=0.035)
     post.return_value.__aenter__.return_value.status = 500
@@ -159,6 +177,6 @@ async def test_rest_write_basic_auth_uses_latin1() -> None:
     edge.backend.connection.password = "pä"
     post = _mock_post(edge, status=200)
 
-    await _sensors(edge)[0].write_via_rest(1, update_cycle=0, timeout=0)
+    await _write_only(edge).write_via_rest(1)
 
     assert post.call_args.kwargs["headers"] == {"Authorization": "Basic dXNlcjpw5A=="}

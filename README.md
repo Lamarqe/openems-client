@@ -99,9 +99,25 @@ Requests to the backend raise the exceptions of `openems_client.exceptions`:
 - `OpenEMSTimeoutError`: an operation of the edge, e.g. a system update, did not finish in time.
 - `OpenEMSError`: the base class of all of them, also raised when the backend rejects a request.
 
-REST writes (`channel.write_via_rest`) raise these exceptions as well. With
-`update_cycle > 0` the call returns after the first write and repeats the
-write in the background; errors of the repeated writes are logged.
+### Writing write-only channels
+
+Channels with `"accessMode": "WO"` (`ChannelKind.WRITE_ONLY`), e.g. setpoints
+and commands, are written via the REST API of the edge. This requires a REST app
+with write access (`Controller.Api.Rest.ReadWrite`), see `edge.rest_writable`.
+
+```python
+channel = component.channels_of(ChannelKind.WRITE_ONLY)[0]
+await channel.write_via_rest(5000)  # one write
+await channel.write_via_rest(5000, update_cycle=30, timeout=600)  # repeated
+```
+
+The value is converted to the type of the channel (`channel.to_rest_value`);
+numbers are given in the normalised unit, e.g. °C for channels in °dC. Invalid
+values and channels which are not write-only raise `ValueError`, REST errors the
+exceptions above. With `update_cycle > 0` the call returns after the first write
+and repeats it in the background, until `timeout` seconds passed (0: no
+timeout), the channel is written again or the edge stops. Errors of the repeated
+writes are logged.
 
 ### Availability
 
@@ -123,7 +139,8 @@ and listeners are called when it changes, e.g. after a system update.
 
 Each component sorts its channels by `kind` (`openems_client.model.ChannelKind`):
 read-only values are `SENSOR` (numbers), `ENUM_SENSOR`, `BINARY_SENSOR` or `TEXT_SENSOR` (text, e.g. serial numbers and versions), writable
-properties are `NUMBER`, `SELECT`, `SWITCH` or `TIME`. Channels without a known
+properties are `NUMBER`, `SELECT`, `SWITCH` or `TIME`, write-only channels
+`WRITE_ONLY`. Channels without a known
 representation, eg string properties without options, are skipped.
 
 ```python

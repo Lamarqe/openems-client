@@ -2,7 +2,7 @@
 
 from abc import abstractmethod
 import asyncio
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import time
 import logging
@@ -19,7 +19,7 @@ from .config import OpenEMSConfig
 from .connection import OpenEMSWebSocketConnection, backend_call
 from .const import CONN_TYPE_REST, CONN_TYPE_WEB_FENECON, CONN_TYPES, SLASH_ESC
 from .exceptions import OpenEMSConnectionError, OpenEMSError, OpenEMSTimeoutError
-from .helpers import cancel_task, connection_url, to_snake_case, wrap_jsonrpc
+from .helpers import cancel_task, connection_url, to_bool, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
     access_mode,
@@ -157,6 +157,8 @@ class OpenEMSChannel(OpenEMSDataHandler):
         self._rest_update_task: asyncio.Task[None] | None = None
 
     def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
+        if channel_json.get("accessMode") == "WO":
+            return ChannelKind.WRITE_ONLY
         if channel_json["type"] == "BOOLEAN":
             return ChannelKind.BINARY_SENSOR
         if self.options is not None:
@@ -216,43 +218,72 @@ class OpenEMSChannel(OpenEMSDataHandler):
         self.component.edge.register_channel(channel_names, self)
 
     def _unsubscribe(self) -> None:
-        if self._rest_update_task is not None:
-            self._rest_update_task.cancel()
-            self._rest_update_task = None
         self.component.edge.unregister_channel(self)
 
+    def to_rest_value(self, value: Any) -> str | bool | int | float:
+        """Convert a value to the type of the channel, raise ValueError if invalid.
+
+        Numbers are given in the normalised unit, eg °C for channels in °dC.
+        """
+        channel_type = self.orig_json["type"]
+        if channel_type == "STRING":
+            if isinstance(value, bool) or not isinstance(value, str | int | float):
+                raise ValueError(f"Invalid text: {value}")
+            return str(value)
+        if channel_type == "BOOLEAN":
+            return to_bool(value)
+        if isinstance(value, bool):
+            # ValueError, as all invalid user input is reported as ValueError
+            raise ValueError(f"Invalid number: {value}")  # noqa: TRY004
+        try:
+            number = float(value) * self._divisor
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"Invalid number: {value}") from err
+        if channel_type in ("FLOAT", "DOUBLE"):
+            return number
+        if not number.is_integer():
+            raise ValueError(f"Invalid integer: {value}")
+        return int(number)
+
     async def write_via_rest(
-        self, new_value: float | bool, update_cycle: int, timeout: int
+        self, value: Any, update_cycle: float = 0, timeout: float = 0
     ) -> None:
-        """Write a channel value via the REST API of the edge.
+        """Write the value of a write-only channel via the REST API of the edge.
+
+        Raise ValueError if the channel is not write-only or the value does not fit
+        the channel, OpenEMSError if the edge has no REST app with write access or
+        rejects the value, OpenEMSConnectionError if the REST API cannot be reached.
 
         With update_cycle > 0 the value is written again every update_cycle seconds
-        in the background, until timeout seconds passed (0: no timeout), the channel
-        is unsubscribed or another write of the channel starts. Errors of the first
-        write are raised, errors of the repeated writes are logged.
+        in the background, until timeout seconds passed (0: no timeout), another
+        write of the channel starts or the edge stops. Errors of the first write are
+        raised, errors of the repeated writes are logged.
         """
+        if self.kind is not ChannelKind.WRITE_ONLY:
+            raise ValueError(
+                f"Channel {self.component.name}/{self.name} is not write-only"
+            )
+        data = {"value": self.to_rest_value(value)}
         edge = self.component.edge
-        # Note: This is not a component property.
-        # This means the value change request must be sent via REST.
-        if not edge.rest or edge.rest.mode != "ReadWrite":
+        if not edge.rest_writable or edge.rest is None:
             raise OpenEMSError(
                 f"Cannot write channel {self.component.name}/{self.name}: "
                 "no REST app with write access"
             )
 
+        # a new write replaces a running cyclic write of the channel
         await cancel_task(self._rest_update_task)
         self._rest_update_task = None
 
         url = edge.rest.url.joinpath("channel", self.component.name, self.name)
-        data = {"value": new_value}
         await self._rest_post(url, data)
         if update_cycle > 0:
-            self._rest_update_task = asyncio.create_task(
+            self._rest_update_task = edge.create_background_task(
                 self._rest_write_cyclic(url, data, update_cycle, timeout)
             )
 
     async def _rest_write_cyclic(
-        self, url: URL, data: dict[str, Any], update_cycle: int, timeout: int
+        self, url: URL, data: dict[str, Any], update_cycle: float, timeout: float
     ) -> None:
         end = asyncio.get_running_loop().time() + timeout if timeout > 0 else None
         while True:
@@ -730,21 +761,9 @@ class OpenEMSNumberProperty(OpenEMSProperty):
 class OpenEMSBooleanProperty(OpenEMSProperty):
     """Class representing a boolean property of an OpenEMS component."""
 
-    TRUE_VALUES = ("1", "true", "on", "yes", "enable")
-    FALSE_VALUES = ("0", "false", "off", "no", "disable")
-
     def to_backend_value(self, value: Any) -> bool:
         """Convert booleans, 0/1 and strings like "on"/"off" to bool."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int) and value in (0, 1):
-            return bool(value)
-        if isinstance(value, str):
-            if value.lower() in self.TRUE_VALUES:
-                return True
-            if value.lower() in self.FALSE_VALUES:
-                return False
-        raise ValueError(f"Invalid boolean: {value}")
+        return to_bool(value)
 
     def _channel_kind(self, channel_json: dict[str, Any]) -> ChannelKind:
         return ChannelKind.SWITCH
@@ -1088,6 +1107,8 @@ class OpenEMSEdge:
             component_config
         )
         self.rest: RestDetails | None = self._prepare_rest(component_config)
+        # eg cyclic REST writes, cancelled when the edge stops
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._version: _OpenEMSEdgeVersion | None = (
             _OpenEMSEdgeVersion(self.components["_meta"])
             if "_meta" in self.components
@@ -1166,6 +1187,22 @@ class OpenEMSEdge:
         await self._channel_subscription_updater.stop()
         await cancel_task(self._channel_data_forwarder)
         self._channel_data_forwarder = None
+        for task in list(self._background_tasks):
+            await cancel_task(task)
+
+    def create_background_task(
+        self, coro: Coroutine[Any, Any, None]
+    ) -> asyncio.Task[None]:
+        """Run a coroutine in a task, which is cancelled when the edge stops."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    @property
+    def rest_writable(self) -> bool:
+        """Return True if the edge has a REST app with write access."""
+        return self.rest is not None and self.rest.mode == "ReadWrite"
 
     def _start_channel_data_forwarder(self) -> None:
         if self._forward_interval:

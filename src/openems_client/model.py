@@ -18,6 +18,8 @@ class ChannelKind(StrEnum):
     ENUM_SENSOR = "enum_sensor"
     # read-only text, eg serial numbers and versions
     TEXT_SENSOR = "text_sensor"
+    # write-only, written via the REST API, eg setpoints and commands
+    WRITE_ONLY = "write_only"
     BINARY_SENSOR = "binary_sensor"
     NUMBER = "number"
     SELECT = "select"
