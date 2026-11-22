@@ -81,6 +81,7 @@ class OpenEMSWebSocketConnection:
                 conn_props["type"],
                 conn_props["host"],
             )
+        self.conn_type: str = conn_props["type"]
         self.username: str = conn_props["username"]
         self.password: str = conn_props["password"]
         self.session: aiohttp.ClientSession | None = session

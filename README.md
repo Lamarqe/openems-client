@@ -225,6 +225,28 @@ error of the update request if the edge rejects it, and raises
 `OpenEMSTimeoutError` if the update did not finish within `timeout` seconds
 (default 900).
 
+### FEMS and release notes
+
+`edge.is_fems` is `True` for FEMS, the OpenEMS distribution of FENECON: for the
+FEMS connection types, edges reporting to the FENECON backend and edges named
+`fems<number>`. For these, `edge.manufacturer` is `"FENECON"`.
+
+`edge.release_url` is the page with the changes of the software releases: the
+changelog page of the FEMS UI or the FENECON portal, the OpenEMS releases on
+GitHub otherwise.
+
+FENECON publishes release notes for FEMS (`edge.has_release_notes`):
+
+```python
+notes = await edge.get_release_notes("en")  # Markdown or None
+```
+
+They cover the releases after the installed up to the latest version of the
+last update state (`edge.get_system_update_state()`). Only changes visible to
+system owners are included, each release in the requested language, otherwise
+English or German. The changelog is read from `https://fenecon.de/fems-changelog`
+with the injected session, once per latest version.
+
 ### Connection types
 
 | Constant | Target | Default URL |

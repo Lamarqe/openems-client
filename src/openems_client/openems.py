@@ -17,8 +17,24 @@ from yarl import URL
 
 from .config import OpenEMSConfig
 from .connection import OpenEMSWebSocketConnection, backend_call
-from .const import CONN_TYPE_REST, CONN_TYPE_WEB_FENECON, CONN_TYPES, SLASH_ESC
+from .const import (
+    CONN_TYPE_REST,
+    CONN_TYPE_WEB_FENECON,
+    CONN_TYPES,
+    REQUEST_TIMEOUT_SECONDS,
+    SLASH_ESC,
+)
 from .exceptions import OpenEMSConnectionError, OpenEMSError, OpenEMSTimeoutError
+from .fems import (
+    FEMS_CHANGELOG_URL,
+    FENECON,
+    ChangelogRelease,
+    is_fems,
+    parse_changelog,
+    release_notes,
+    release_url,
+    releases_between,
+)
 from .helpers import cancel_task, connection_url, to_bool, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
     OpenEMSAccessMode,
@@ -1100,8 +1116,15 @@ class OpenEMSEdge:
         )
         self._registered_handlers: dict[str, set[OpenEMSDataHandler]] = {}
         self.hostname: str = component_config["_host"]["Hostname"]
+        self.is_fems: bool = is_fems(
+            backend.connection.conn_type, self.hostname, component_config
+        )
         if self.backend.multi_edge:
             self.hostname += " " + self.id
+        # last update state with versions, the range of the release notes
+        self._update_state: SystemUpdateState | None = None
+        # changelog of FEMS releases, by the latest version it was read for
+        self._changelog: tuple[str, list[ChangelogRelease]] | None = None
 
         self.components: dict[str, OpenEMSComponent] = self._prepare_entities(
             component_config
@@ -1309,7 +1332,77 @@ class OpenEMSEdge:
                 edgeId=self._id, payload=edge_call
             )
         )
-        return parse_system_update_state(result["payload"]["result"])
+        state = parse_system_update_state(result["payload"]["result"])
+        if state.installed_version is not None:
+            self._update_state = state
+        return state
+
+    @property
+    def manufacturer(self) -> str | None:
+        """Return the manufacturer of the edge, if known."""
+        return FENECON if self.is_fems else None
+
+    @property
+    def release_url(self) -> str:
+        """Return the page with the changes of the software releases."""
+        connection = self.backend.connection
+        return release_url(connection.conn_type, connection.conn_url.host, self.is_fems)
+
+    @property
+    def has_release_notes(self) -> bool:
+        """Return True if release notes are available, see get_release_notes."""
+        return self.is_fems
+
+    async def get_release_notes(self, language: str) -> str | None:
+        """Return the changes from the installed to the latest version as Markdown.
+
+        The versions are taken from the last update state, see
+        get_system_update_state. Only FEMS publish release notes, each release is
+        given in the requested language (eg "de"), otherwise English or German.
+        Return None if there are none or they cannot be read.
+        """
+        if not self.is_fems:
+            return None
+        state = self._update_state
+        if state is None:
+            try:
+                state = await self.get_system_update_state()
+            except OpenEMSError:
+                return None
+        if state.installed_version is None or state.latest_version is None:
+            return None
+        if self._changelog is None or self._changelog[0] != state.latest_version:
+            try:
+                releases = await self._read_changelog()
+            except OpenEMSError as err:
+                _LOGGER.debug("Cannot read the FEMS changelog: %s", err)
+                return None
+            self._changelog = (state.latest_version, releases)
+        return release_notes(
+            releases_between(
+                self._changelog[1], state.installed_version, state.latest_version
+            ),
+            language,
+        )
+
+    async def _read_changelog(self) -> list[ChangelogRelease]:
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+
+        async def _get(session: aiohttp.ClientSession) -> list[ChangelogRelease]:
+            async with session.get(FEMS_CHANGELOG_URL, timeout=timeout) as resp:
+                resp.raise_for_status()
+                return parse_changelog(await resp.json(content_type=None))
+
+        session = self.backend.connection.session
+        try:
+            if session is not None:
+                return await _get(session)
+            async with aiohttp.ClientSession() as own_session:
+                return await _get(own_session)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise OpenEMSConnectionError(
+                f"Cannot read the FEMS changelog: {err}"
+            ) from err
 
     async def execute_system_update(self) -> None:
         """Trigger executeSystemUpdate request."""
