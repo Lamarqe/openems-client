@@ -1091,3 +1091,47 @@ async def test_get_channel_values_timeout_raises() -> None:
         reader = OpenEMSConfigReader(conn, edge_id="0")
         with pytest.raises(OpenEMSConnectionError):
             await reader.get_channel_values_via_websocket(["_host/Hostname"])
+
+    mock_server.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("failing_call", "error", "expected"),
+    [
+        pytest.param(
+            "ws_connect",
+            jsonrpc_base.jsonrpc.TransportError("Error connecting to server"),
+            OpenEMSConnectionError,
+            id="connect",
+        ),
+        pytest.param(
+            "authenticateWithPassword",
+            jsonrpc_base.jsonrpc.ProtocolError(1003, "Authentication failed"),
+            OpenEMSAuthError,
+            id="login",
+        ),
+        pytest.param(
+            "subscribeEdges",
+            jsonrpc_base.jsonrpc.ProtocolError(-32603, "Internal error"),
+            OpenEMSError,
+            id="subscribe",
+        ),
+    ],
+)
+async def test_get_channel_values_closes_connection_on_error(
+    failing_call: str, error: Exception, expected: type[OpenEMSError]
+) -> None:
+    """The dedicated websocket is closed when a request fails."""
+    conn, _ = _make_conn()
+    mock_server = _MockJsonrpcServer()
+    setattr(mock_server, failing_call, AsyncMock(side_effect=error))
+
+    with patch(
+        "openems_client.connection.jsonrpc_websocket.Server",
+        return_value=mock_server,
+    ):
+        reader = OpenEMSConfigReader(conn, edge_id="0")
+        with pytest.raises(expected):
+            await reader.get_channel_values_via_websocket(["_host/Hostname"])
+
+    mock_server.close.assert_awaited_once()

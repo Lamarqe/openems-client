@@ -329,20 +329,7 @@ class OpenEMSConfigReader:
             heartbeat=WEBSOCKET_HEARTBEAT_SECONDS,
         )
 
-        ws_loop_task = await backend_call(
-            rpc_server.ws_connect(), CONNECT_TIMEOUT_SECONDS
-        )
-        ws_loop_task.add_done_callback(
-            functools.partial(_ws_loop_ended, self.connection.conn_url.host)
-        )
-        _LOGGER.debug("wsocket component info request: login")
-        await backend_call(
-            rpc_server.authenticateWithPassword(
-                username=self.connection.username, password=self.connection.password
-            )
-        )
-
-        # prepare callback event and subscribe for the required data
+        # prepare callback event for the subscribed data
         data_received: asyncio.Event = asyncio.Event()
         data: dict[str, Any] = {}
 
@@ -355,18 +342,36 @@ class OpenEMSConfigReader:
             data = kwargs["payload"]["params"]
             data_received.set()
 
-        rpc_server.edgeRpc = _handle_callback
-        await backend_call(rpc_server.subscribeEdges(edges=[self.edge_id]))
+        # the connection is closed on errors and timeouts, too
+        try:
+            ws_loop_task = await backend_call(
+                rpc_server.ws_connect(), CONNECT_TIMEOUT_SECONDS
+            )
+            ws_loop_task.add_done_callback(
+                functools.partial(_ws_loop_ended, self.connection.conn_url.host)
+            )
+            _LOGGER.debug("wsocket component info request: login")
+            await backend_call(
+                rpc_server.authenticateWithPassword(
+                    username=self.connection.username,
+                    password=self.connection.password,
+                )
+            )
 
-        subscribe_call = wrap_jsonrpc("subscribeChannels", count=0, channels=channels)
-        # pyright: ignore[reportGeneralTypeIssues]
-        await backend_call(
-            rpc_server.edgeRpc(edgeId=self.edge_id, payload=subscribe_call)
-        )
+            rpc_server.edgeRpc = _handle_callback
+            await backend_call(rpc_server.subscribeEdges(edges=[self.edge_id]))
 
-        # wait for the data. When received, close connection and return data
-        await backend_call(data_received.wait(), timeout=5)
-        await rpc_server.close()
+            subscribe_call = wrap_jsonrpc(
+                "subscribeChannels", count=0, channels=channels
+            )
+            # pyright: ignore[reportGeneralTypeIssues]
+            await backend_call(
+                rpc_server.edgeRpc(edgeId=self.edge_id, payload=subscribe_call)
+            )
+
+            await backend_call(data_received.wait(), timeout=5)
+        finally:
+            await rpc_server.close()
 
         return data
 
