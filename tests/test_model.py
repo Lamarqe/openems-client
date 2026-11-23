@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from yarl import URL
 
+from openems_client.helpers import to_snake_case
 from openems_client.model import (
     ChannelKind,
     Quantity,
@@ -16,6 +17,7 @@ from openems_client.model import (
     unit_info,
 )
 from openems_client.openems import (
+    CONFIG,
     OpenEMSBooleanProperty,
     OpenEMSChannel,
     OpenEMSEdge,
@@ -426,3 +428,32 @@ async def test_text_and_float_values() -> None:
     cpu_temperature.handle_data_update("_host/CpuTemperature", "hot")
     assert os_version.value is None
     assert cpu_temperature.value is None
+
+
+def test_heat_pump_sg_ready_defaults() -> None:
+    """SG-Ready heat pump component and entities are primary, so enabled by default."""
+    for name in (
+        "_PropertyMode",
+        "_PropertyManualState",
+        "_PropertyAutomaticForceOnSoc",
+        "_PropertyAutomaticLockSoc",
+        "_PropertyAutomaticLockCtrlEnabled",
+        "_PropertyAutomaticLockGridBuyPower",
+        "_PropertyMinimumSwitchingTime",
+        "Status",
+    ):
+        assert CONFIG.is_primary_channel("ctrlIoHeatPump0", name), name
+    assert CONFIG.has_primary_channels("ctrlIoHeatPump0")
+    assert not CONFIG.has_primary_channels("ctrlDebugLog0")
+
+
+def test_to_snake_case_matches_translation_key_format() -> None:
+    """Option keys match the format of the translation keys of Home Assistant."""
+    assert (
+        to_snake_case(
+            "Not active. The controller has no flexibility left to delay charge, "
+            "because the limitation is nearly zero."
+        )
+        == "not_active_the_controller_has_no_flexibility_left_to_delay_charge_"
+        "because_the_limitation_is_nearly_zero"
+    )
