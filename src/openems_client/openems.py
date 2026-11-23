@@ -11,7 +11,6 @@ import re
 from typing import Any, NamedTuple, cast, overload
 
 import aiohttp
-from jinja2 import Template
 import jsonrpc_base
 from yarl import URL
 
@@ -37,10 +36,10 @@ from .fems import (
 )
 from .helpers import cancel_task, connection_url, to_bool, to_snake_case, wrap_jsonrpc
 from .helpers_openems import (
+    NumberExpression,
     OpenEMSAccessMode,
     access_mode,
     expand_derived_definition,
-    prepare_ref_value,
 )
 from .model import ChannelKind, Quantity, Severity, channel_key, severity, unit_info
 from .system_update import SystemUpdateState, UpdateStatus, parse_system_update_state
@@ -605,9 +604,9 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         self.lower_limit: float = 0
         self.upper_limit: float = 100000
 
-        self.multiplier_def: Template = Template(str(self.multiplier))
-        self.lower_limit_def: Template = Template(str(self.lower_limit))
-        self.upper_limit_def: Template = Template(str(self.upper_limit))
+        self.multiplier_def = NumberExpression(str(self.multiplier), component)
+        self.lower_limit_def = NumberExpression(str(self.lower_limit), component)
+        self.upper_limit_def = NumberExpression(str(self.upper_limit), component)
 
         self.step: float = 1.0
         # fixed step size from the config, replaces the calculated step size
@@ -651,24 +650,10 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         lower_limit = self.lower_limit
         upper_limit = self.upper_limit
         step = self.step
-        if self.multiplier_def:
-            try:
-                render_result = self.multiplier_def.render(self.reference_channels)
-                multiplier = float(render_result)
-            except ValueError, TypeError:
-                multiplier = 1.0
-
-        try:
-            render_result = self.lower_limit_def.render(self.reference_channels)
-            lower_noscale = float(render_result)
-        except ValueError, TypeError:
-            lower_noscale = None
-
-        try:
-            render_result = self.upper_limit_def.render(self.reference_channels)
-            upper_noscale = float(render_result)
-        except ValueError, TypeError:
-            upper_noscale = None
+        multiplier_value = self.multiplier_def.evaluate(self.reference_channels)
+        multiplier = 1.0 if multiplier_value is None else multiplier_value
+        lower_noscale = self.lower_limit_def.evaluate(self.reference_channels)
+        upper_noscale = self.upper_limit_def.evaluate(self.reference_channels)
 
         if upper_noscale is None or lower_noscale is None:
             lower_limit = 0
@@ -727,14 +712,12 @@ class OpenEMSNumberProperty(OpenEMSProperty):
 
     def set_multiplier_def(self, multiplier_def: str) -> None:
         """Initialize the multiplier of the number channel."""
-        self.multiplier_def, multiplier_references = prepare_ref_value(
-            multiplier_def, self.component
-        )
-        if not multiplier_references:
+        self.multiplier_def = NumberExpression(multiplier_def, self.component)
+        if not self.multiplier_def.linked_channels:
             # no external references. Calculate the result immediately
-            self.multiplier = float(self.multiplier_def.render())
+            self.multiplier = self.multiplier_def.constant()
         else:
-            for ref in multiplier_references:
+            for ref in self.multiplier_def.linked_channels:
                 self.reference_channels[ref] = None
 
     def set_step(self, step: float) -> None:
@@ -744,22 +727,20 @@ class OpenEMSNumberProperty(OpenEMSProperty):
 
     def set_limit_def(self, limit_def: dict[str, str]) -> None:
         """Initialize the limits of the number channel."""
-        self.lower_limit_def, lower_references = prepare_ref_value(
-            limit_def["lower"], self.component
-        )
+        self.lower_limit_def = NumberExpression(limit_def["lower"], self.component)
+        lower_references = self.lower_limit_def.linked_channels
         if not lower_references:
             # no external references. Calculate the result immediately
-            self.lower_limit = float(self.lower_limit_def.render())
+            self.lower_limit = self.lower_limit_def.constant()
         else:
             for ref in lower_references:
                 self.reference_channels[ref] = None
 
-        self.upper_limit_def, upper_references = prepare_ref_value(
-            limit_def["upper"], self.component
-        )
+        self.upper_limit_def = NumberExpression(limit_def["upper"], self.component)
+        upper_references = self.upper_limit_def.linked_channels
         if not upper_references:
             # no external references. Calculate the result immediately
-            self.upper_limit = float(self.upper_limit_def.render())
+            self.upper_limit = self.upper_limit_def.constant()
         else:
             for ref in upper_references:
                 self.reference_channels[ref] = None

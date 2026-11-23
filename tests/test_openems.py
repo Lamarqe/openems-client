@@ -15,7 +15,7 @@ from openems_client import openems
 from openems_client.const import SLASH_ESC
 from openems_client.exceptions import OpenEMSConnectionError, OpenEMSError
 from openems_client.helpers import wrap_jsonrpc
-from openems_client.helpers_openems import prepare_ref_value
+from openems_client.helpers_openems import NumberExpression
 from openems_client.model import ChannelKind
 
 
@@ -242,11 +242,7 @@ def test_number_property_with_template_references() -> None:
     num_json = {"id": "_PropertyForceChargeMinPower", "type": "INTEGER", "unit": "W"}
     num_prop = openems.OpenEMSNumberProperty(component=comp, channel_json=num_json)
 
-    mult_def = "{{$evcs.id/Phases}}"
-    _, refs = prepare_ref_value(mult_def, comp)
-    assert refs  # has external references
-
-    num_prop.set_multiplier_def(mult_def)
+    num_prop.set_multiplier_def("{{$evcs.id/Phases}}")
     num_prop.set_limit_def({"lower": "1", "upper": "100"})
 
     ref_key = "evcs1" + SLASH_ESC + "Phases"
@@ -255,6 +251,115 @@ def test_number_property_with_template_references() -> None:
     num_prop.reference_channels[ref_key] = 3
     num_prop._update_config()
     assert num_prop.multiplier == 3.0
+
+
+def _evcs_component(evcs_id: str = "evcs0") -> MagicMock:
+    comp = _make_component("ctrlEvcs0")
+    comp.json_properties = {"evcs.id": evcs_id, "ess.id": "ess0"}
+    return comp
+
+
+@pytest.mark.parametrize(
+    ("expr", "values", "expected"),
+    [
+        pytest.param("100000", {}, 100000.0, id="constant"),
+        pytest.param(
+            "{{$ess.id/MaxApparentPower}}",
+            {"ess0" + SLASH_ESC + "MaxApparentPower": 10000},
+            10000.0,
+            id="reference",
+        ),
+        pytest.param(
+            "0-{{$ess.id/MaxApparentPower}}",
+            {"ess0" + SLASH_ESC + "MaxApparentPower": 10000},
+            -10000.0,
+            id="negated_reference",
+        ),
+        pytest.param(
+            "{{$evcs.id/MaximumHardwarePower}} / {{$evcs.id/Phases}}",
+            {
+                "evcs0" + SLASH_ESC + "MaximumHardwarePower": 22000,
+                "evcs0" + SLASH_ESC + "Phases": 2,
+            },
+            11000.0,
+            id="division",
+        ),
+        pytest.param(
+            "{{$evcs.id/MaximumHardwarePower}} / {{$evcs.id/Phases}}",
+            {
+                "evcs0" + SLASH_ESC + "MaximumHardwarePower": 22000,
+                "evcs0" + SLASH_ESC + "Phases": 0,
+            },
+            None,
+            id="division_by_zero",
+        ),
+        pytest.param(
+            "0-{{$ess.id/MaxApparentPower}}",
+            {"ess0" + SLASH_ESC + "MaxApparentPower": None},
+            None,
+            id="value_missing",
+        ),
+        pytest.param(
+            "0-{{$ess.id/MaxApparentPower}}",
+            {"ess0" + SLASH_ESC + "MaxApparentPower": "unknown"},
+            None,
+            id="value_not_a_number",
+        ),
+        pytest.param("0-{{$ess.id/MaxApparentPower}}", {}, None, id="value_unknown"),
+    ],
+)
+def test_number_expression_evaluate(
+    expr: str, values: dict[str, openems.BackendValue], expected: float | None
+) -> None:
+    """Expressions of the config evaluate to numbers, invalid values to None."""
+    assert NumberExpression(expr, _evcs_component()).evaluate(values) == expected
+
+
+def test_number_expression_linked_channels_are_unique() -> None:
+    """A channel referenced twice is linked once."""
+    expression = NumberExpression(
+        "{{$evcs.id/Phases}} * {{$evcs.id/Phases}}", _evcs_component()
+    )
+    assert expression.linked_channels == ["evcs0" + SLASH_ESC + "Phases"]
+    assert expression.evaluate({"evcs0" + SLASH_ESC + "Phases": 3}) == 9.0
+
+
+def test_number_expression_edge_values_are_no_code() -> None:
+    """A property value from the edge is only a channel key, it is never evaluated."""
+    payload = "0}}{{ cycler.__init__.__globals__.os.getcwd() }}{{ 0 if "
+    comp = _evcs_component()
+    comp.json_properties["ess.id"] = payload
+    expression = NumberExpression("0-{{$ess.id/MaxApparentPower}}", comp)
+
+    linked_channel = payload + SLASH_ESC + "MaxApparentPower"
+    assert expression.linked_channels == [linked_channel]
+    assert expression.evaluate({linked_channel: 100}) == -100.0
+
+
+def test_number_expression_constant_rejects_non_numbers() -> None:
+    """An expression without references must be a number."""
+    with pytest.raises(ValueError, match="Invalid number expression"):
+        NumberExpression("'abc'", _evcs_component()).constant()
+
+
+def test_number_property_limits_fall_back_on_division_by_zero() -> None:
+    """Limits dividing by a channel value of 0 fall back to the defaults."""
+    comp = _make_component_with_edge("ctrlEvcs0")
+    comp.json_properties["evcs.id"] = "evcs0"
+    num_json = {"id": "_PropertyForceChargeMinPower", "type": "INTEGER", "unit": "W"}
+    num_prop = openems.OpenEMSNumberProperty(component=comp, channel_json=num_json)
+    num_prop.set_limit_def(
+        {
+            "lower": "{{$evcs.id/MinimumHardwarePower}} / {{$evcs.id/Phases}}",
+            "upper": "{{$evcs.id/MaximumHardwarePower}} / {{$evcs.id/Phases}}",
+        }
+    )
+
+    num_prop.handle_data_update("evcs0/MinimumHardwarePower", 4200)
+    num_prop.handle_data_update("evcs0/MaximumHardwarePower", 22000)
+    num_prop.handle_data_update("evcs0/Phases", 0)
+
+    assert (num_prop.lower_limit, num_prop.upper_limit) == (0, 100000)
 
 
 async def test_entity_lifecycle_and_unique_id(dummy_backend) -> None:
