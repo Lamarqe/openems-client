@@ -1524,9 +1524,15 @@ class OpenEMSBackend:
         # call the edge method
         method(params)
 
-    def start(self) -> None:
-        """Start the reconnect logic and the background tasks of the edge."""
-        self.connection.enable_reconnect(self.the_edge.set_unavailable)
+    def start(self, auth_failed_callback: Callable[[], None] | None = None) -> None:
+        """Start the reconnect logic and the background tasks of the edge.
+
+        auth_failed_callback is called when the backend rejects the login of a
+        reconnect, the reconnects stop then.
+        """
+        self.connection.enable_reconnect(
+            self.the_edge.set_unavailable, auth_failed_callback
+        )
         self.the_edge.start()
 
     async def stop(self) -> None:

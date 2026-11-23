@@ -125,6 +125,10 @@ writes are logged.
 connected and sends channel data. On a connection loss the values are cleared,
 the channels become unavailable and the library reconnects in the background.
 They are available again with the first channel data after the reconnect.
+If the backend rejects the login of a reconnect, e.g. after a password change,
+the reconnects stop and the callback passed with
+`backend.start(auth_failed_callback=cb)` is called. The channels stay
+unavailable until a new backend is started with valid credentials.
 Listeners of the channels are called on every change of the availability.
 
 ### Edge version

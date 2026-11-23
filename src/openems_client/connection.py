@@ -113,10 +113,18 @@ class OpenEMSWebSocketConnection:
             )
         )
 
-    def enable_reconnect(self, connection_lost_callback: Callable[[], None]) -> None:
-        """Start a tasks which checks for connection losses tries to reconnect afterwards."""
+    def enable_reconnect(
+        self,
+        connection_lost_callback: Callable[[], None],
+        auth_failed_callback: Callable[[], None] | None = None,
+    ) -> None:
+        """Start a tasks which checks for connection losses tries to reconnect afterwards.
+
+        If the backend rejects the login of a reconnect, the reconnects stop and
+        auth_failed_callback is called.
+        """
         self._reconnect_task = asyncio.create_task(
-            self._reconnect_forever(connection_lost_callback)
+            self._reconnect_forever(connection_lost_callback, auth_failed_callback)
         )
 
     def notify_data_received(self) -> None:
@@ -129,7 +137,9 @@ class OpenEMSWebSocketConnection:
         return self._reconnect_task
 
     async def _reconnect_forever(
-        self, connection_lost_callback: Callable[[], None]
+        self,
+        connection_lost_callback: Callable[[], None],
+        auth_failed_callback: Callable[[], None] | None,
     ) -> None:
         while True:
             # check for an existing connection
@@ -170,6 +180,15 @@ class OpenEMSWebSocketConnection:
                 # connected. Lets login
                 await self.login_to_server()
                 _LOGGER.info("Connection to host %s reestablished", self.conn_url.host)
+            except OpenEMSAuthError:
+                # retrying with rejected credentials could lock the account
+                _LOGGER.warning(
+                    "Login to host %s rejected, stopping reconnects", self.conn_url.host
+                )
+                await self.rpc_server.close()
+                if auth_failed_callback is not None:
+                    auth_failed_callback()
+                return
             except OpenEMSError:
                 await asyncio.sleep(10)
             self._last_data_received = time.time()

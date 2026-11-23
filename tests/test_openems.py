@@ -566,6 +566,22 @@ async def test_edge_starts_background_tasks_only_on_start() -> None:
     assert edge._channel_data_forwarder is None
 
 
+async def test_backend_start_passes_auth_failed_callback() -> None:
+    """start() enables the reconnects with the callback for rejected logins."""
+    connection = MagicMock()
+    backend = openems.OpenEMSBackend(
+        connection, "edge-1", False, {"_host": {"Hostname": "h1"}}
+    )
+    auth_failed_callback = MagicMock()
+
+    backend.start(auth_failed_callback)
+
+    connection.enable_reconnect.assert_called_once_with(
+        backend.the_edge.set_unavailable, auth_failed_callback
+    )
+    await backend.the_edge.stop()
+
+
 async def test_edge_restarts_forwarder_on_interval_change() -> None:
     """Changing the forward interval of a started edge replaces the forwarder task."""
     edge = openems.OpenEMSEdge(_make_backend(), "edge-1", {"_host": {"Hostname": "h1"}})

@@ -191,16 +191,17 @@ async def test_connection_loop_exception_is_retrieved() -> None:
 
 
 async def test_enable_reconnect_creates_task() -> None:
-    """enable_reconnect stores a running asyncio.Task and passes the callback."""
+    """enable_reconnect stores a running asyncio.Task and passes the callbacks."""
     conn, _ = _make_conn()
     callback = MagicMock()
+    auth_failed_callback = MagicMock()
 
     with patch.object(conn, "_reconnect_forever", new=AsyncMock()) as mock_rf:
-        conn.enable_reconnect(callback)
+        conn.enable_reconnect(callback, auth_failed_callback)
 
         assert conn.reconnect_task is not None
         assert isinstance(conn.reconnect_task, asyncio.Task)
-        mock_rf.assert_called_once_with(callback)
+        mock_rf.assert_called_once_with(callback, auth_failed_callback)
 
     conn.reconnect_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -401,6 +402,61 @@ async def test_reconnect_forever_extra_sleep_on_rejected_request() -> None:
     connect_mock.assert_called_once()
 
 
+async def _reconnect_with_rejected_login(
+    conn: OpenEMSWebSocketConnection,
+    auth_failed_callback: MagicMock | None,
+) -> tuple[MagicMock, AsyncMock, AsyncMock]:
+    """Run the reconnect logic once with a login that the backend rejects."""
+    callback = MagicMock()
+    conn.rpc_server_task = _done_task_mock()
+    conn.notify_data_received()
+    connect_mock = AsyncMock()
+    login_mock = AsyncMock(side_effect=OpenEMSAuthError("authentication failed"))
+
+    async def fake_wait(tasks, *, timeout=None):
+        return (set(tasks), set())
+
+    async def fake_sleep(_seconds: float) -> None:
+        pass
+
+    with (
+        patch("asyncio.wait", fake_wait),
+        patch("asyncio.sleep", fake_sleep),
+        patch.object(conn, "connect_to_server", connect_mock),
+        patch.object(conn, "login_to_server", login_mock),
+    ):
+        conn.enable_reconnect(callback, auth_failed_callback)
+        # the task ends by itself instead of retrying
+        await asyncio.wait_for(conn.reconnect_task, timeout=1)
+    return callback, connect_mock, login_mock
+
+
+async def test_reconnect_forever_stops_on_rejected_login() -> None:
+    """A rejected login closes the socket, calls auth_failed_callback and stops."""
+    conn, mock_server = _make_conn()
+    auth_failed_callback = MagicMock()
+
+    callback, connect_mock, login_mock = await _reconnect_with_rejected_login(
+        conn, auth_failed_callback
+    )
+
+    callback.assert_called_once()
+    connect_mock.assert_called_once()
+    login_mock.assert_called_once()
+    mock_server.close.assert_awaited_once()
+    auth_failed_callback.assert_called_once()
+
+
+async def test_reconnect_forever_stops_on_rejected_login_without_callback() -> None:
+    """Without auth_failed_callback, a rejected login still stops the reconnects."""
+    conn, mock_server = _make_conn()
+
+    _, connect_mock, _ = await _reconnect_with_rejected_login(conn, None)
+
+    connect_mock.assert_called_once()
+    mock_server.close.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # stop
 # ---------------------------------------------------------------------------
@@ -411,7 +467,7 @@ async def test_stop_cancels_reconnect_task_and_closes() -> None:
     conn, mock_server = _make_conn()
     task_started = asyncio.Event()
 
-    async def block_forever(_callback) -> None:
+    async def block_forever(*_callbacks) -> None:
         task_started.set()
         await asyncio.Event().wait()
 
