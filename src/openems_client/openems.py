@@ -663,7 +663,8 @@ class OpenEMSNumberProperty(OpenEMSProperty):
         upper_limit = self.upper_limit
         step = self.step
         multiplier_value = self.multiplier_def.evaluate(self.reference_channels)
-        multiplier = 1.0 if multiplier_value is None else multiplier_value
+        # unknown, or 0 (eg no phases reported), which would make writes divide by 0
+        multiplier = multiplier_value or 1.0
         lower_noscale = self.lower_limit_def.evaluate(self.reference_channels)
         upper_noscale = self.upper_limit_def.evaluate(self.reference_channels)
 

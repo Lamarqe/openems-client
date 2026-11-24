@@ -253,6 +253,30 @@ def test_number_property_with_template_references() -> None:
     assert num_prop.multiplier == 3.0
 
 
+@pytest.mark.parametrize(
+    ("phases", "multiplier", "backend_value"),
+    [
+        pytest.param(3, 3.0, 1200.0, id="three_phases"),
+        pytest.param(0, 1.0, 3600.0, id="no_phases"),
+        pytest.param(None, 1.0, 3600.0, id="unknown"),
+    ],
+)
+def test_number_property_multiplier_without_value(
+    phases: int | None, multiplier: float, backend_value: float
+) -> None:
+    """A multiplier of 0 is treated as unknown, so values can still be written."""
+    comp = _make_component_with_edge("ctrlEvcs0")
+    comp.json_properties["evcs.id"] = "evcs0"
+    num_json = {"id": "_PropertyForceChargeMinPower", "type": "INTEGER", "unit": "W"}
+    num_prop = openems.OpenEMSNumberProperty(component=comp, channel_json=num_json)
+    num_prop.set_multiplier_def("{{$evcs.id/Phases}}")
+
+    num_prop.handle_data_update("evcs0/Phases", phases)
+
+    assert num_prop.multiplier == multiplier
+    assert num_prop.to_backend_value(3600) == backend_value
+
+
 def _evcs_component(evcs_id: str = "evcs0") -> MagicMock:
     comp = _make_component("ctrlEvcs0")
     comp.json_properties = {"evcs.id": evcs_id, "ess.id": "ess0"}
