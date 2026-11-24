@@ -28,6 +28,10 @@ from .helpers import cancel_task, connection_url, wrap_jsonrpc
 
 _LOGGER = logging.getLogger(__name__)
 
+# edges per getEdges request, and the most pages read (backends with many edges)
+_EDGE_PAGE_SIZE = 20
+_MAX_EDGE_PAGES = 100
+
 
 async def backend_call[T](
     awaitable: Awaitable[T], timeout: float | None = REQUEST_TIMEOUT_SECONDS
@@ -376,11 +380,23 @@ class OpenEMSConfigReader:
         return data
 
     async def read_edges(self) -> dict[str, Any]:
-        """Request list of all edges."""
-        edges: dict[str, Any] = await backend_call(
-            self.connection.rpc_server.getEdges(page=0, limit=20, searchParams={})
-        )
-        return edges
+        """Request the list of all edges, page by page."""
+        edges: list[dict[str, Any]] = []
+        edge_ids: set[str] = set()
+        for page in range(_MAX_EDGE_PAGES):
+            response = await backend_call(
+                self.connection.rpc_server.getEdges(
+                    page=page, limit=_EDGE_PAGE_SIZE, searchParams={}
+                )
+            )
+            page_edges: list[dict[str, Any]] = response.get("edges", [])
+            new_edges = [edge for edge in page_edges if edge["id"] not in edge_ids]
+            edges.extend(new_edges)
+            edge_ids.update(edge["id"] for edge in new_edges)
+            # a page without new edges means the backend does not support paging
+            if len(page_edges) < _EDGE_PAGE_SIZE or not new_edges:
+                break
+        return {"edges": edges}
 
     @staticmethod
     def parse_login_response(login_response: dict[str, Any]) -> bool:

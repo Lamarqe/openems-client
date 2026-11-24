@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import gc
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import jsonrpc_base.jsonrpc
@@ -685,6 +686,46 @@ async def test_read_edges_edge_fields_match_traffic() -> None:
     assert edge["isOnline"] is True
     assert edge["role"] == "owner"
     assert edge["sumState"] == "OK"
+
+
+def _edges(first: int, count: int) -> dict[str, Any]:
+    return {"edges": [{"id": str(i), "isOnline": True} for i in range(first, first + count)]}
+
+
+@pytest.mark.parametrize(
+    ("pages", "edge_count"),
+    [
+        pytest.param([_edges(0, 20), _edges(20, 20), _edges(40, 5)], 45, id="three_pages"),
+        pytest.param([_edges(0, 20), _edges(20, 0)], 20, id="exact_multiple"),
+        pytest.param([_edges(0, 20), _edges(0, 20)], 20, id="paging_not_supported"),
+    ],
+)
+async def test_read_edges_reads_all_pages(
+    pages: list[dict[str, Any]], edge_count: int
+) -> None:
+    """All edges are read page by page, until a page is short or brings no new edges."""
+    conn, mock_server = _make_conn()
+    mock_server.getEdges = AsyncMock(side_effect=pages)
+
+    result = await OpenEMSConfigReader(conn).read_edges()
+
+    assert [edge["id"] for edge in result["edges"]] == [str(i) for i in range(edge_count)]
+    assert [call.kwargs["page"] for call in mock_server.getEdges.call_args_list] == list(
+        range(len(pages))
+    )
+
+
+async def test_read_edges_stops_after_the_page_limit() -> None:
+    """At most 100 pages are read."""
+    conn, mock_server = _make_conn()
+    mock_server.getEdges = AsyncMock(
+        side_effect=lambda page, limit, searchParams: _edges(page * limit, limit)  # noqa: N803
+    )
+
+    result = await OpenEMSConfigReader(conn).read_edges()
+
+    assert len(result["edges"]) == 2000
+    assert mock_server.getEdges.call_count == 100
 
 
 # ---------------------------------------------------------------------------

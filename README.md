@@ -63,7 +63,8 @@ async with OpenEMSClient(conn_props, session) as client:
 ```
 
 `login.multi_edge` is `True` for backends that manage several edges, such as the
-FENECON portal. `read_edges()` returns `EdgeInfo` objects with `id`, `online`,
+FENECON portal. `read_edges()` returns all edges of the account (read page by
+page) as `EdgeInfo` objects with `id`, `online`,
 `comment` and `version`.
 
 An existing `aiohttp.ClientSession` can be passed with
