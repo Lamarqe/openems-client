@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openems-client"
-version = "0.17.2"
+version = "0.18.0"
 description = "Async client for OpenEMS / FENECON FEMS energy management systems"
 readme = "README.md"
 license = "Apache-2.0"

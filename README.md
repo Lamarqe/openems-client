@@ -166,7 +166,7 @@ Every channel provides:
 | `unique_id` | `<hostname>/<edge id>/<component>/<channel>` |
 | `key` | snake_case channel name without the `_Property` prefix, eg `charge_mode` |
 | `display_name` | readable English name without the `_Property` prefix, eg `Max DC charge power`; numbers keep their value (`Tower 0 cell 2 voltage`), acronyms are spelled as in `config/acronyms.json` |
-| `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C` and `°dC` (values divided by 10); `None` without unit |
+| `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C` and `°dC` (values divided by 10); `None` without unit. OpenEMS reports properties without unit, the units of number properties come from `config/number_properties.json` |
 | `quantity` | `openems_client.model.Quantity`, eg `ENERGY`, `STATE_OF_CHARGE` |
 | `cumulative` | the value is a counter which only increases (`_Σ` units) |
 | `measurement` | the value is measured, eg a power or temperature: it has a unit and is no counter. Numbers without unit are codes, IDs or settings |

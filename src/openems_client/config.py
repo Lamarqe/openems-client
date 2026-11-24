@@ -81,6 +81,13 @@ class OpenEMSConfig:
         )
         return multiplier
 
+    def get_number_unit(self, component_name: str, channel_name: str) -> str | None:
+        """Return the unit of a number property, OpenEMS reports properties without."""
+        unit: str | None = self._get_config_property(
+            self.number_properties, "unit", component_name, channel_name
+        )
+        return unit
+
     def get_number_step(self, component_name: str, channel_name: str) -> float | None:
         """Return the fixed step size for a given component/channel."""
         step: float | None = self._get_config_property(

@@ -3,6 +3,7 @@
     "channels": [
       {
         "id": "_PropertyTargetGridSetpoint",
+        "unit": "W",
         "limit": {
           "lower": "0-{{$ess.id/MaxApparentPower}}",
           "upper": "{{$ess.id/MaxApparentPower}}"
@@ -16,6 +17,7 @@
     "channels": [
       {
         "id": "_PropertyManualEnergySessionLimit",
+        "unit": "Wh",
         "limit": {
           "lower": "0",
           "upper": "100000"
@@ -28,6 +30,7 @@
     "channels": [
       {
         "id": "_PropertyEnergySessionLimit",
+        "unit": "Wh",
         "limit": {
           "lower": "0",
           "upper": "100000"
@@ -35,6 +38,7 @@
       },
       {
         "id": "_PropertyForceChargeMinPower",
+        "unit": "W",
         "limit": {
           "lower": "{{$evcs.id/MinimumHardwarePower}} / {{$evcs.id/Phases}}",
           "upper": "{{$evcs.id/MaximumHardwarePower}} / {{$evcs.id/Phases}}"
@@ -43,6 +47,7 @@
       },
       {
         "id": "_PropertyDefaultChargeMinPower",
+        "unit": "W",
         "limit": {
           "lower": "{{$evcs.id/MinimumHardwarePower}}",
           "upper": "{{$evcs.id/MaximumHardwarePower}}"
@@ -55,6 +60,7 @@
     "channels": [
       {
         "id": "_PropertyReserveSoc",
+        "unit": "%",
         "limit": {
           "lower": "5",
           "upper": "100"
@@ -67,6 +73,7 @@
     "channels": [
       {
         "id": "_PropertyMinTime",
+        "unit": "h",
         "limit": {
           "lower": "1",
           "upper": "10"
@@ -79,6 +86,7 @@
     "channels": [
       {
         "id": "_PropertyAutomaticForceOnSoc",
+        "unit": "%",
         "limit": {
           "lower": "0",
           "upper": "100"
@@ -86,6 +94,7 @@
       },
       {
         "id": "_PropertyAutomaticLockSoc",
+        "unit": "%",
         "limit": {
           "lower": "0",
           "upper": "100"
@@ -93,6 +102,7 @@
       },
       {
         "id": "_PropertyAutomaticRecommendationSurplusPower",
+        "unit": "W",
         "limit": {
           "lower": "0",
           "upper": "100000"
@@ -101,6 +111,7 @@
       },
       {
         "id": "_PropertyAutomaticForceOnSurplusPower",
+        "unit": "W",
         "limit": {
           "lower": "0",
           "upper": "100000"
@@ -109,6 +120,7 @@
       },
       {
         "id": "_PropertyAutomaticLockGridBuyPower",
+        "unit": "W",
         "limit": {
           "lower": "0",
           "upper": "100000"
@@ -117,6 +129,7 @@
       },
       {
         "id": "_PropertyMinimumSwitchingTime",
+        "unit": "s",
         "limit": {
           "lower": "0",
           "upper": "3600"

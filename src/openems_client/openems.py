@@ -854,6 +854,10 @@ class OpenEMSComponent:
                                 multiplier = CONFIG.get_number_multiplier(
                                     self.name, channel_json["id"]
                                 )
+                                if unit := CONFIG.get_number_unit(
+                                    self.name, channel_json["id"]
+                                ):
+                                    channel_json = {**channel_json, "unit": unit}
                                 number_prop = OpenEMSNumberProperty(
                                     component=self, channel_json=channel_json
                                 )

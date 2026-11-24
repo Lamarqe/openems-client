@@ -324,6 +324,49 @@ async def test_measurement(type_: str, unit: str, measurement: bool) -> None:
     assert edge.components["meter0"].channels[0].measurement is measurement
 
 
+@pytest.mark.parametrize(
+    ("component", "channel", "unit", "quantity"),
+    [
+        pytest.param(
+            "ctrlEvcs0", "_PropertyEnergySessionLimit", "Wh", Quantity.ENERGY, id="energy"
+        ),
+        pytest.param(
+            "ctrlEvcs0", "_PropertyDefaultChargeMinPower", "W", Quantity.POWER, id="power"
+        ),
+        pytest.param(
+            "ctrlEmergencyCapacityReserve0",
+            "_PropertyReserveSoc",
+            "%",
+            Quantity.STATE_OF_CHARGE,
+            id="state_of_charge",
+        ),
+        pytest.param(
+            "ctrlIoHeatPump0",
+            "_PropertyMinimumSwitchingTime",
+            "s",
+            Quantity.DURATION,
+            id="duration",
+        ),
+    ],
+)
+async def test_number_property_units(
+    component: str, channel: str, unit: str, quantity: Quantity
+) -> None:
+    """OpenEMS reports properties without unit, the units come from the config."""
+    edge = _make_edge(
+        {
+            component: {
+                # limits of the charging station reference its properties
+                "properties": {"evcs.id": "evcs0"},
+                "channels": [_channel(channel, "INTEGER")],
+            }
+        }
+    )
+
+    number = edge.components[component].channels_of(ChannelKind.NUMBER)[0]
+    assert (number.unit, number.quantity) == (unit, quantity)
+
+
 async def test_option_keys_and_values() -> None:
     """Test enum channels provide snake_case option keys as values."""
     edge = _make_edge(EVCS_CONFIG)
