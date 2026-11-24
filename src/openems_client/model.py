@@ -1,5 +1,6 @@
 """Classification of OpenEMS channels, independent of any consumer."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import re
@@ -9,6 +10,8 @@ from .helpers import to_snake_case
 PROPERTY_PREFIX = "_Property"
 
 _CAMEL_CASE_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+# upper case letters with digits (L1, PT1), upper case runs, words, numbers
+_WORD_PATTERN = re.compile(r"[A-Z]+\d+(?![a-z])|[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 
 
 class ChannelKind(StrEnum):
@@ -125,6 +128,28 @@ def channel_key(name: str) -> str:
     return to_snake_case(
         _CAMEL_CASE_PATTERN.sub("_", name.removeprefix(PROPERTY_PREFIX))
     )
+
+
+def display_name(name: str, acronyms: Mapping[str, str]) -> str:
+    """Return a readable English name of a channel name, without the property prefix.
+
+    Eg "_PropertyMaxDcChargePower" -> "Max DC charge power",
+    "Tower0Module3Cell002Voltage" -> "Tower 0 module 3 cell 2 voltage". Words found in
+    acronyms (by lower case word) get its spelling, numbers keep their value.
+    """
+    words: list[str] = []
+    for word in _WORD_PATTERN.findall(name.removeprefix(PROPERTY_PREFIX)):
+        if (spelling := acronyms.get(word.lower())) is not None:
+            words.append(spelling)
+        elif word.isdigit():
+            words.append(str(int(word)))
+        elif word.isupper() or word[-1].isdigit():
+            # upper case words and tokens like L1, V2, PT1
+            words.append(word)
+        else:
+            words.append(word.lower())
+    text = " ".join(words)
+    return text[:1].upper() + text[1:]
 
 
 def severity(level: str | None) -> Severity | None:

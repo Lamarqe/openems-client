@@ -26,6 +26,9 @@ class OpenEMSConfig:
             self.update_groups: list[dict[str, Any]] = json.load(groups_file)
         with (path / "primary_channels.json").open(encoding=ENCODING) as primary_file:
             self.primary_channels: list[dict[str, Any]] = json.load(primary_file)
+        # spelling of acronyms in display names, by lower case word
+        with (path / "acronyms.json").open(encoding=ENCODING) as acronyms_file:
+            self.acronyms: dict[str, str] = json.load(acronyms_file)
 
     def _get_config_property(
         self,

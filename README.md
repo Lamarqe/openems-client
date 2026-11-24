@@ -164,6 +164,7 @@ Every channel provides:
 | --- | --- |
 | `unique_id` | `<hostname>/<edge id>/<component>/<channel>` |
 | `key` | snake_case channel name without the `_Property` prefix, eg `charge_mode` |
+| `display_name` | readable English name without the `_Property` prefix, eg `Max DC charge power`; numbers keep their value (`Tower 0 cell 2 voltage`), acronyms are spelled as in `config/acronyms.json` |
 | `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C` and `°dC` (values divided by 10); `None` without unit |
 | `quantity` | `openems_client.model.Quantity`, eg `ENERGY`, `STATE_OF_CHARGE` |
 | `cumulative` | the value is a counter which only increases (`_Σ` units) |

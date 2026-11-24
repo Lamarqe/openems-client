@@ -41,7 +41,15 @@ from .helpers_openems import (
     access_mode,
     expand_derived_definition,
 )
-from .model import ChannelKind, Quantity, Severity, channel_key, severity, unit_info
+from .model import (
+    ChannelKind,
+    Quantity,
+    Severity,
+    channel_key,
+    display_name,
+    severity,
+    unit_info,
+)
 from .system_update import SystemUpdateState, UpdateStatus, parse_system_update_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,6 +85,8 @@ class OpenEMSDataHandler:
         self.name: str = name
         # stable snake_case id of the channel, shared by all components
         self.key: str = channel_key(name)
+        # readable English name, eg "Max DC charge power" for "MaxDcChargePower"
+        self.display_name: str = display_name(name, CONFIG.acronyms)
         info = unit_info(unit, self.key)
         self.unit: str | None = info.unit
         self.quantity: Quantity | None = info.quantity

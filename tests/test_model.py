@@ -13,6 +13,7 @@ from openems_client.model import (
     Severity,
     UnitInfo,
     channel_key,
+    display_name,
     severity,
     unit_info,
 )
@@ -140,6 +141,42 @@ def test_unit_info(unit: str, key: str, expected: UnitInfo) -> None:
 def test_channel_key(name: str, key: str) -> None:
     """Test the snake_case keys of channel names."""
     assert channel_key(name) == key
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        pytest.param("ActivePowerL1", "Active power L1", id="phase"),
+        pytest.param("DcChargeEnergy", "DC charge energy", id="acronym"),
+        pytest.param("EssMaxApparentPower", "ESS max apparent power", id="acronym_first"),
+        pytest.param("_PropertyEnabled", "Enabled", id="property"),
+        pytest.param("_PropertyEnablePT1Filter", "Enable PT1 filter", id="upper_case_with_digits"),
+        pytest.param(
+            "Tower0Module3Cell002Voltage",
+            "Tower 0 module 3 cell 2 voltage",
+            id="zero_based_numbers",
+        ),
+        pytest.param("Tower0Soh", "Tower 0 SoH", id="mixed_case_acronym"),
+        pytest.param("V2LvrtEnterThreshold", "V2 LVRT enter threshold", id="version"),
+        pytest.param("V2RpmBPointCosPhi", "V2 rpm B point cos φ", id="single_letter"),
+        pytest.param("S113Hz", "S113 Hz", id="unit"),
+        pytest.param("State28", "State 28", id="number"),
+        pytest.param("VBattery1", "V battery 1", id="letter_before_word"),
+        pytest.param("", "", id="empty"),
+    ],
+)
+def test_display_name(name: str, expected: str) -> None:
+    """Channel names become readable names with the acronyms of the config."""
+    assert display_name(name, CONFIG.acronyms) == expected
+
+
+def test_channels_have_display_names() -> None:
+    """Every channel provides its display name."""
+    edge = _make_edge(
+        {"ess0": {"properties": {}, "channels": [_channel("DcChargeEnergy", "LONG", "Wh_Σ")]}}
+    )
+
+    assert edge.components["ess0"].channels[0].display_name == "DC charge energy"
 
 
 @pytest.mark.parametrize(
