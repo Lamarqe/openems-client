@@ -168,6 +168,7 @@ Every channel provides:
 | `unit` | normalised unit, eg `Wh` for `Wh_Σ`, `°C` for `C` and `°dC` (values divided by 10); `None` without unit |
 | `quantity` | `openems_client.model.Quantity`, eg `ENERGY`, `STATE_OF_CHARGE` |
 | `cumulative` | the value is a counter which only increases (`_Σ` units) |
+| `measurement` | the value is measured, eg a power or temperature: it has a unit and is no counter. Numbers without unit are codes, IDs or settings |
 | `primary` | one of the main channels of the component (`config/primary_channels.json`) |
 | `severity` | level of state channels which signal a problem |
 | `option_keys` | snake_case keys of the options of `ENUM_SENSOR` and `SELECT` channels |

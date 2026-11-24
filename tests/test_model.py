@@ -306,6 +306,24 @@ async def test_channel_metadata() -> None:
     assert channels["Soc"].unique_id == "fems1/0/ctrlEvcs0/Soc"
 
 
+@pytest.mark.parametrize(
+    ("type_", "unit", "measurement"),
+    [
+        pytest.param("INTEGER", "W", True, id="quantity"),
+        pytest.param("INTEGER", "‰Vn", True, id="unit_without_quantity"),
+        pytest.param("INTEGER", "", False, id="no_unit"),
+        pytest.param("LONG", "Wh_Σ", False, id="cumulative"),
+    ],
+)
+async def test_measurement(type_: str, unit: str, measurement: bool) -> None:
+    """Values with a unit are measurements, unless they are counters."""
+    edge = _make_edge(
+        {"meter0": {"properties": {}, "channels": [_channel("Value", type_, unit)]}}
+    )
+
+    assert edge.components["meter0"].channels[0].measurement is measurement
+
+
 async def test_option_keys_and_values() -> None:
     """Test enum channels provide snake_case option keys as values."""
     edge = _make_edge(EVCS_CONFIG)

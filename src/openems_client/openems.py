@@ -91,6 +91,8 @@ class OpenEMSDataHandler:
         self.unit: str | None = info.unit
         self.quantity: Quantity | None = info.quantity
         self.cumulative: bool = info.cumulative
+        # a measured value with a unit, eg power; numbers without unit are codes, IDs or settings
+        self.measurement: bool = info.unit is not None and not info.cumulative
         self._divisor: int = info.divisor
         # one of the main channels of the component, see config/primary_channels.json
         self.primary: bool = CONFIG.is_primary_channel(component.name, name)
